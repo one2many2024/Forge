@@ -2,7 +2,7 @@
 
 **One command that ships a feature end to end — with the discipline baked in.**
 
-`/forge "<your task>"` runs a two-step orchestration arc on top of the
+`/forge:forge "<your task>"` runs a two-step orchestration arc on top of the
 [babysitter](https://github.com/a5c-ai/babysitter) run engine:
 
 1. **PLAN** — a reuse-audit, then a written, reviewable execution plan (nothing is built yet).
@@ -79,8 +79,12 @@ claude plugin install --scope user forge@forge
 Restart Claude Code, then:
 
 ```
-/forge "Add a GET /api/health route returning { status: 'ok', ts }, with a unit test. Branch feat/health-endpoint."
+/forge:forge "Add a GET /api/health route returning { status: 'ok', ts }, with a unit test. Branch feat/health-endpoint."
 ```
+
+> **Command name:** Claude Code namespaces every plugin command by its plugin, so the
+> command is `/forge:forge` (just as babysitter's is `/babysitter:plan`). A bare `/forge`
+> will not resolve.
 
 Forge will produce a plan, pause for your approval, execute it through the gate, open a
 do-NOT-merge PR, and finish with the gap-audit.

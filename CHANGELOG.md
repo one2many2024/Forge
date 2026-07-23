@@ -3,7 +3,7 @@
 ## 0.1.0
 
 - Initial release.
-- `/forge "<task>"` — the two-step orchestration arc: babysitter **PLAN** (Phase 0
+- `/forge:forge "<task>"` — the two-step orchestration arc: babysitter **PLAN** (Phase 0
   reuse-audit → author process → present → pause for approval) then **EXECUTE** (drive the
   run with the review battery, TDD-first, full gate, human breakpoints, do-NOT-merge PR),
   closing with an **"anything left out?"** gap-audit.
