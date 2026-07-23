@@ -1,5 +1,8 @@
 {
   "name": "forge",
+  "metadata": {
+    "description": "Forge — the /forge two-step orchestration arc for Claude Code (babysitter PLAN then EXECUTE + gap-audit), with six bundled review agents."
+  },
   "owner": {
     "name": "Eli Gur",
     "url": "https://github.com/one2many2024"
