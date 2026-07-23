@@ -3,7 +3,7 @@ description: End-to-end feature arc — babysitter PLAN then EXECUTE with full o
 argument-hint: "\"<the full task / instructions prompt>\""
 ---
 
-# /forge — the two-step orchestration arc
+# /forge:forge — the two-step orchestration arc
 
 You are running the **FORGE arc** on the task described in the arguments below. Forge
 wraps our standard two phases — `/babysitter:plan` then `/babysitter:call` — and applies
@@ -19,7 +19,7 @@ If the arguments are empty, ask the user for the task prompt and stop.
 **Preflight (do this first).** Confirm the **babysitter** skill is available (it powers both
 phases). If `babysitter:babysit` is not installed, tell the user to install it and stop:
 `claude plugin marketplace add a5c-ai/babysitter` then
-`claude plugin install --scope user babysitter@a5c.ai` (restart, then re-run `/forge`).
+`claude plugin install --scope user babysitter@a5c.ai` (restart, then re-run `/forge:forge`).
 
 ---
 
