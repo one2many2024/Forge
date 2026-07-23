@@ -1,0 +1,14 @@
+{
+  "name": "forge",
+  "owner": {
+    "name": "Eli Gur",
+    "url": "https://github.com/one2many2024"
+  },
+  "plugins": [
+    {
+      "name": "forge",
+      "source": "./",
+      "description": "The /forge two-step orchestration arc: babysitter PLAN then EXECUTE, then an 'anything left out?' gap-audit. Bundles six review agents."
+    }
+  ]
+}
