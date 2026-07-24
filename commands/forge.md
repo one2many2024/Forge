@@ -3,7 +3,7 @@ description: End-to-end feature arc — babysitter PLAN then EXECUTE with full o
 argument-hint: "\"<the full task / instructions prompt>\""
 ---
 
-# /forge:forge — the two-step orchestration arc
+# /forge — the two-step orchestration arc
 
 You are running the **FORGE arc** on the task described in the arguments below. Forge
 wraps our standard two phases — `/babysitter:plan` then `/babysitter:call` — and applies
@@ -19,7 +19,7 @@ If the arguments are empty, ask the user for the task prompt and stop.
 **Preflight (do this first).** Confirm the **babysitter** skill is available (it powers both
 phases). If `babysitter:babysit` is not installed, tell the user to install it and stop:
 `claude plugin marketplace add a5c-ai/babysitter` then
-`claude plugin install --scope user babysitter@a5c.ai` (restart, then re-run `/forge:forge`).
+`claude plugin install --scope user babysitter@a5c.ai` (restart, then re-run `/forge`).
 
 ---
 
@@ -41,6 +41,14 @@ phases). If `babysitter:babysit` is not installed, tell the user to install it a
   shell chains (`&`, `;`, `$(...)`) — put multi-step shell work in a `scripts/` file.
 - **Never fabricate a breakpoint approval.** In interactive mode, always ask the user and
   pass through their actual selection.
+- **Token-conscious fan-out.** The review battery and gates are the token-heavy stretch, and
+  forge multiplies any waste across every agent — so close it at the source, not with an
+  after-the-fact compressor: (1) scope every reviewer to the **changed-file set**, never "audit
+  the repo"; (2) summarise gate output to **pass / failing-excerpt only**, never dump green
+  logs; (3) fan out **domain** specialists only when their trigger files changed — but ALWAYS
+  run `code` / `security` / `typescript` reviewers (trouble can come from anywhere); (4) have
+  each reviewer return **compact structured findings** (severity · file:line · one-line), not
+  prose. Encode these as the process's own tasks, not as afterthoughts.
 - This command is user-global: if the repo lacks a given gate (Supabase checks, RALPH,
   tsconfig.ci), degrade gracefully — run what exists, note what doesn't.
 
@@ -67,8 +75,14 @@ Invoke the **babysitter:babysit** skill (Skill tool) in plan-only mode for this 
    Use `kind: 'shell'` for deterministic gates (tsc/lint/tests/grep) and `kind: 'agent'`/
    `'skill'` for reasoning/review; never `kind: 'node'`.
 4. **Bake the arc into the process:** read-before-write; TDD-first where a spec exists; a
-   parallel pre-commit review battery; a human design-gate breakpoint after the core design;
-   the full gate; a final sign-off breakpoint; commit/push/PR-never-merge + migration comment.
+   **`scripts/forge-scope.sh` precompute** task (changed-file set + `TOUCHES_*` flags) feeding
+   a **token-conscious parallel pre-commit review battery** (diff-scoped reviewers, compact
+   structured findings, always-on `code`/`security`/`typescript` + flag-gated domain
+   specialists); a human design-gate breakpoint after the core design; the full gate **run
+   through `scripts/gate-summary.sh`** (pass / failing-excerpt only); a final sign-off
+   breakpoint; commit/push/PR-never-merge + migration comment. Copy both helper scripts from
+   this plugin into the repo's `scripts/` on first use so the process calls committed, portable
+   copies.
 5. **Present** the plan at a high level with the reuse-audit block, then use **AskUserQuestion**
    for any genuine decisions (design choices, scope, the daily-cap/threshold-style constants).
    **Then PAUSE and ask the user to approve the plan before executing.** Do not create the run.
@@ -84,10 +98,22 @@ completion proof, applying the arc at every phase:
   to files actually on the live path (grep the whole `src/`, not just entry dirs).
 - **TDD-first** where a spec exists: author tests from the contract (not the impl), confirm
   RED, then implement to GREEN.
-- **Mandatory parallel pre-commit review battery** the moment implementation is complete —
-  launch simultaneously: `code-reviewer`, `security-reviewer`, `typescript-reviewer`,
-  `performance-optimizer`, `refactor-cleaner`, `silent-failure-hunter`, and — when DB / API /
-  auth / PII are touched — `database-reviewer` + the RLS / API-security audit checklists.
+- **Mandatory parallel pre-commit review battery** the moment implementation is complete.
+  First compute the scope **once** by running the forge helper `scripts/forge-scope.sh`
+  (shipped with this plugin — copy it into the target repo's `scripts/` on first use so the
+  process calls the committed, portable copy). It emits the changed-file set plus
+  `TOUCHES_DB` / `TOUCHES_API` / `TOUCHES_AUTH` / `TOUCHES_PERF` flags. Pass the file set to
+  every reviewer as explicit scope — reviewers read the diff and those files, never "audit the
+  repo" — and use the flags to gate the conditional lenses. Launch simultaneously, each
+  returning **compact structured findings** (severity · file:line · one-line summary, capped —
+  not prose):
+  - **Always, every run** (trouble can come from anywhere — do NOT gate these on the flags):
+    `code-reviewer`, `security-reviewer`, `typescript-reviewer`, `silent-failure-hunter`,
+    `refactor-cleaner`.
+  - **Conditional, gated on the `forge-scope.sh` flags** (skip when the flag is 0, to avoid
+    burning tokens on an irrelevant lens): `performance-optimizer` when `TOUCHES_PERF=1`; and
+    `database-reviewer` + the RLS / API-security audit checklists when `TOUCHES_DB=1`,
+    `TOUCHES_API=1`, or `TOUCHES_AUTH=1`.
   Resolve **every CRITICAL / HIGH / MEDIUM** (fix it, or justify in a code comment) before
   committing. **Adversarially verify** findings and refute false positives with evidence
   (cite file:line) rather than "fixing" non-bugs. If a named reviewer agent isn't installed,
@@ -100,7 +126,11 @@ completion proof, applying the arc at every phase:
   if present) → RALPH spec-lock suite (runs inside the unit run). Register any new Playwright
   spec in `playwright.config.ts` or it silently never runs. Root-cause pre-existing failures
   (verify with `git log <base>..<head>` before blaming your change); a `page.route()` mock
-  never intercepts a server component's direct DB read — control the DB row instead.
+  never intercepts a server component's direct DB read — control the DB row instead. Run each
+  gate through the forge helper `scripts/gate-summary.sh "<label>" "<command>"` (shipped with
+  this plugin — copy into the target repo's `scripts/` on first use) which emits only `PASS` or
+  the exit code + grep'd failing lines, so kilobytes of green log never enter context — full
+  output surfaces only for a gate that actually fails.
 - **Migrations:** additive / `IF NOT EXISTS` / no downtime; verify RLS deny-by-default,
   least-privilege grants, and atomicity; apply to prod only when the user directs it or repo
   convention requires; then `gen:types`, remove any temporary `.rpc` cast, and run the
