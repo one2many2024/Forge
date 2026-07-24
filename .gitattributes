@@ -1,0 +1,2 @@
+# Shell scripts must keep LF endings — CRLF breaks the shebang on *nix and Git Bash.
+*.sh text eol=lf
