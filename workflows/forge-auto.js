@@ -1,6 +1,6 @@
 export const meta = {
   name: 'forge-ship',
-  description: 'Autonomous forge arc: reuse-audit → plan → TDD → implement → scope → review battery → verify → resolve → gate → do-NOT-merge PR → gap-audit. No human breakpoints; merge and prod-migration apply stay human.',
+  description: 'Autonomous forge arc: reuse-audit → plan → TDD → implement → scope → review battery → verify → resolve → gate → do-NOT-merge PR → gap-audit. No human breakpoints; merge and prod-migration apply stay human. Bounded by hard agent/budget ceilings and diff-scaled depth.',
   phases: [
     { title: 'Plan' },
     { title: 'Implement' },
@@ -14,43 +14,64 @@ export const meta = {
 }
 
 // ---------------------------------------------------------------------------
-// Bounds. MAX_* are hard caps that apply REGARDLESS of budget (the real limit).
-// A +budget only scales depth UP within these caps; with no budget you get the
-// baseline defaults. MAX_BUDGET is a self-imposed output-token ceiling checked
-// via budget.spent() — it bounds an unattended run even when the user set none.
+// HARD CEILINGS — these actually fire mid-flight (checked before EVERY agent
+// spawn), unlike the old MAX_BUDGET which was only checked between rounds and
+// let a single review round / gate loop blow past it.
+//
+// NOTE ON WALL-CLOCK: the Workflow runtime forbids Date.now()/new Date(), so a
+// wall-clock ceiling cannot be enforced from inside this script. It must be
+// enforced by the operator/monitor (watch /workflows; TaskStop if it stalls).
+// The agent-count + budget ceilings below are the in-script backstops.
 // ---------------------------------------------------------------------------
-const MAX_BUDGET = 750_000          // output-token self-cap (graceful degrade on hit)
-const MAX_FINDER_ROUNDS = 5
-const MAX_GATE_REPAIRS = 3
-const MAX_VERIFY_VOTES = 5
-const TOKENS_PER_ROUND = 150_000    // rough cost of one extra review round
+const MAX_BUDGET = 750_000                                   // output-token self-cap
+const MAX_AGENTS = budget.total ? Math.min(400, Math.floor(budget.total / 12_000)) : 60
+const MAX_FINDER_ROUNDS = budget.total ? 3 : 1
+const MAX_VERIFY_FINDINGS = 8                                // only verify top-N by severity
+const HIGH_VOTES = budget.total ? 3 : 2                      // CRITICAL/HIGH skeptic votes
+const MED_VOTES = 1                                          // MEDIUM gets 1; LOW is not verified
+const MAX_GATE_REPAIRS = 2
 
-// Budget-derived depth (guarded on budget.total — null ⇒ baseline).
-const FINDER_ROUNDS = budget.total
-  ? Math.min(MAX_FINDER_ROUNDS, Math.max(1, Math.floor(budget.total / TOKENS_PER_ROUND)))
-  : 1
-const VERIFY_VOTES = budget.total ? MAX_VERIFY_VOTES : 3
+// args may arrive as an object OR a JSON-encoded string — tolerate both.
+let _args = args
+if (typeof _args === 'string') { try { _args = JSON.parse(_args) } catch (e) { _args = {} } }
+if (!_args || typeof _args !== 'object') _args = {}
+const task = _args.task ? String(_args.task) : null
+const baseBranch = _args.baseBranch ? String(_args.baseBranch) : 'main'
 
-const task = (args && args.task) ? String(args.task) : null
-const baseBranch = (args && args.baseBranch) ? String(args.baseBranch) : 'main'
+// --- guarded agent wrapper: enforces MAX_AGENTS + MAX_BUDGET before spawning --
+let agentCount = 0
+let aborted = false
+async function A(prompt, opts) {
+  if (aborted) return null
+  if (agentCount >= MAX_AGENTS || budget.spent() >= MAX_BUDGET) {
+    if (!aborted) { aborted = true; log(`ceiling hit — agents=${agentCount} spent=${Math.round(budget.spent() / 1000)}k; degrading to ship`) }
+    return null
+  }
+  agentCount += 1
+  return agent(prompt, opts)
+}
 
-// True once the run has spent its self-imposed ceiling — callers degrade, not throw.
-const capped = () => budget.spent() >= MAX_BUDGET
+const SEV_RANK = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3 }
+const votesFor = (sev) => (sev === 'CRITICAL' || sev === 'HIGH') ? HIGH_VOTES : (sev === 'MEDIUM' ? MED_VOTES : 0)
+const keyOf = (f) => `${f.file}:${f.line}:${f.summary}`
 
-// --- schemas (validated at the tool layer; agents must return these shapes) ---
+// --- schemas ---
 const SCOPE_SCHEMA = {
   type: 'object',
-  required: ['files', 'flags'],
+  required: ['files', 'flags', 'trivial'],
   properties: {
     files: { type: 'array', items: { type: 'string' } },
+    // trivial = comment/doc/config-only, no logic/type/test/behaviour change.
+    trivial: { type: 'boolean' },
     flags: {
       type: 'object',
-      required: ['TOUCHES_DB', 'TOUCHES_API', 'TOUCHES_AUTH', 'TOUCHES_PERF'],
+      required: ['TOUCHES_DB', 'TOUCHES_API', 'TOUCHES_AUTH', 'TOUCHES_PERF', 'TOUCHES_UI'],
       properties: {
         TOUCHES_DB: { type: 'boolean' },
         TOUCHES_API: { type: 'boolean' },
         TOUCHES_AUTH: { type: 'boolean' },
         TOUCHES_PERF: { type: 'boolean' },
+        TOUCHES_UI: { type: 'boolean' },
       },
     },
   },
@@ -74,200 +95,188 @@ const FINDINGS_SCHEMA = {
     },
   },
 }
-const VERDICT_SCHEMA = {
-  type: 'object',
-  required: ['real', 'reason'],
-  properties: {
-    real: { type: 'boolean' },
-    reason: { type: 'string' },
-  },
-}
-const GATE_SCHEMA = {
-  type: 'object',
-  required: ['green', 'summary'],
-  properties: {
-    green: { type: 'boolean' },
-    summary: { type: 'string' },
-  },
-}
-
-// Always-on lenses (trouble can come from anywhere) + flag-gated domain lenses.
-const REVIEWERS = [
-  { key: 'code-reviewer', gate: null },
-  { key: 'security-reviewer', gate: null },
-  { key: 'typescript-reviewer', gate: null },
-  { key: 'silent-failure-hunter', gate: null },
-  { key: 'refactor-cleaner', gate: null },
-  { key: 'performance-optimizer', gate: 'perf' },
-  { key: 'database-reviewer', gate: 'domain' },
-]
+const VERDICT_SCHEMA = { type: 'object', required: ['real', 'reason'], properties: { real: { type: 'boolean' }, reason: { type: 'string' } } }
+const GATE_SCHEMA = { type: 'object', required: ['green', 'summary'], properties: { green: { type: 'boolean' }, summary: { type: 'string' } } }
 
 async function run() {
-  if (!task) {
-    return { error: 'forge-ship: no task provided (args.task is empty).' }
-  }
+  if (!task) return { error: 'forge-ship: no task provided (args.task is empty).' }
 
   // -- Plan -----------------------------------------------------------------
   phase('Plan')
-  const plan = await agent(
-    `You are the PLAN phase of an autonomous forge run. Task:\n\n${task}\n\n` +
-    `Do a REUSE-AUDIT first (existing migrations, API routes, env vars, deps, imports — flag ` +
-    `anything already on ${baseBranch}). Then produce a concrete implementation plan: files to ` +
-    `touch, tests to write first (TDD), and any migration needed. Branch from ${baseBranch} as ` +
-    `feat/… or fix/…. Return the plan as text.`,
+  const plan = await A(
+    `PLAN phase of an autonomous forge run. Task:\n\n${task}\n\nDo a REUSE-AUDIT first ` +
+    `(existing migrations, routes, env vars, deps — flag anything already on ${baseBranch}). ` +
+    `Then a concrete plan: files to touch, whether it needs tests, any migration. Branch from ` +
+    `${baseBranch} as feat/… or fix/…. Return the plan as text.`,
     { phase: 'Plan', label: 'plan' },
   )
+  if (aborted) return finish(null, { green: false, summary: 'aborted before implement' }, [], 0, plan)
 
-  // -- Implement (TDD-first) ------------------------------------------------
+  // -- Implement (TDD-first UNLESS the change is trivial) --------------------
   phase('Implement')
-  await agent(
-    `Implement the task on a new branch off ${baseBranch}, TDD-first where a spec exists ` +
-    `(author tests from the contract, confirm RED, implement to GREEN). Read before write; ` +
-    `trace the runtime call path; scope edits to files on the live path. Write any migration ` +
-    `additively (IF NOT EXISTS, no downtime) but DO NOT apply it to prod. Plan:\n\n${plan}`,
+  await A(
+    `Implement the task on a new branch off ${baseBranch}. TDD-first (author tests from the ` +
+    `contract, confirm RED, implement to GREEN) UNLESS the change is trivial (comment/doc/config ` +
+    `only) — then no tests. Read before write; scope edits to the live path. Write any migration ` +
+    `additively (IF NOT EXISTS) but DO NOT apply it to prod. Plan:\n\n${plan}`,
     { phase: 'Implement', label: 'implement' },
   )
 
-  // -- Scope (real forge-scope.sh: changed-file set + TOUCHES_* flags) -------
-  const scope = await agent(
-    `Run \`bash scripts/forge-scope.sh ${baseBranch}\` (copy it from this plugin into the repo's ` +
-    `scripts/ first if absent). Return its changed-file set and TOUCHES_* flags as booleans.`,
+  // -- Scope: changed-file set, TOUCHES_* flags, and a TRIVIAL judgement -----
+  const scope = await A(
+    `Run \`bash scripts/forge-scope.sh ${baseBranch}\` (copy it from this plugin into scripts/ ` +
+    `first if absent). Return its changed-file set and flags. Also set TOUCHES_UI (any .tsx/.jsx ` +
+    `or component/page change) and trivial=true ONLY if the whole diff is comment/doc/config with ` +
+    `zero logic/type/test/behaviour change.`,
     { phase: 'Implement', label: 'scope', schema: SCOPE_SCHEMA },
   )
   const files = (scope && scope.files) ? scope.files : []
   const flags = (scope && scope.flags) ? scope.flags : {}
-  const activeReviewers = REVIEWERS.filter((r) => {
-    if (!r.gate) return true
-    if (r.gate === 'perf') return !!flags.TOUCHES_PERF
-    if (r.gate === 'domain') return !!(flags.TOUCHES_DB || flags.TOUCHES_API || flags.TOUCHES_AUTH)
-    return true
-  })
+  const trivial = !!(scope && scope.trivial)
   const scopeLine = files.length ? files.join('\n') : '(scope empty — review the working diff)'
 
-  // -- Review battery → per-finding adversarial verify (pipeline: verify as
-  //    each lens completes). Looped up to FINDER_ROUNDS, budget-capped. -------
+  // Reviewers: trivial ⇒ a minimal lens set; else the full battery gated by flags.
+  const activeReviewers = trivial
+    ? ['code-reviewer', 'security-reviewer']
+    : [
+        'code-reviewer', 'security-reviewer', 'typescript-reviewer',
+        'silent-failure-hunter', 'refactor-cleaner',
+      ]
+        .concat(flags.TOUCHES_PERF ? ['performance-optimizer'] : [])
+        .concat((flags.TOUCHES_DB || flags.TOUCHES_API || flags.TOUCHES_AUTH) ? ['database-reviewer'] : [])
+
+  // -- Review (barrier per round) → dedup+cap → severity-tiered verify -------
   phase('Review')
   const confirmed = []
   const seen = new Set()
   let round = 0
-  let cappedEarly = false
-  while (round < FINDER_ROUNDS) {
+  while (round < MAX_FINDER_ROUNDS && !aborted) {
     round += 1
-    if (capped()) { cappedEarly = true; break }
 
-    const perLens = await pipeline(
-      activeReviewers,
-      (r) => agent(
-        `${r.key}: review ONLY these changed files (never audit the repo):\n${scopeLine}\n\n` +
-        `Round ${round}. Return compact findings — severity · file:line · one-line summary.`,
-        { phase: 'Review', label: `review:${r.key}`, schema: FINDINGS_SCHEMA },
-      ),
-      (review) => parallel(
-        ((review && review.findings) || []).map((f) => () =>
-          // Perspective-diverse verify: N skeptics try to REFUTE; majority-real survives.
-          parallel(
-            Array.from({ length: VERIFY_VOTES }, (_, i) => () =>
-              agent(
-                `Adversarially verify this finding — try to REFUTE it with evidence (cite ` +
-                `file:line). Default real=false if uncertain.\n${f.severity} ${f.file}:${f.line} ` +
-                `— ${f.summary}\n(lens ${i + 1})`,
-                { phase: 'Verify', label: `verify:${f.file}:${f.line}`, schema: VERDICT_SCHEMA },
-              ),
-            ),
-          ).then((votes) => {
-            const good = votes.filter(Boolean)
-            const realCount = good.filter((v) => v.real).length
-            return { ...f, real: realCount * 2 >= good.length } // majority-real
-          }),
-        ),
-      ),
-    )
+    const roundFindings = (await parallel(activeReviewers.map((r) => () =>
+      A(
+        `${r}: review ONLY these changed files (never audit the repo):\n${scopeLine}\n\nRound ` +
+        `${round}. Return compact findings — severity · file:line · one-line. If the change is ` +
+        `genuinely fine, return an EMPTY findings array; do not invent issues.`,
+        { phase: 'Review', label: `review:${r}`, schema: FINDINGS_SCHEMA },
+      ).then((x) => (x && x.findings) ? x.findings : []),
+    ))).filter(Boolean).flat()
+
+    // Dedup vs everything seen, then cap to the top-N by severity (kills the N×votes blow-up).
+    const fresh = roundFindings.filter((f) => f && !seen.has(keyOf(f)))
+    fresh.forEach((f) => seen.add(keyOf(f)))
+    const ranked = fresh
+      .sort((a, b) => (SEV_RANK[a.severity] ?? 9) - (SEV_RANK[b.severity] ?? 9))
+      .slice(0, MAX_VERIFY_FINDINGS)
 
     phase('Verify')
-    const fresh = perLens.flat().filter(Boolean).filter((f) => f && f.real)
-    let added = 0
-    for (const f of fresh) {
-      const k = `${f.file}:${f.line}:${f.summary}`
-      if (seen.has(k)) continue
-      seen.add(k)
-      confirmed.push(f)
-      added += 1
-    }
-    log(`round ${round}: +${added} confirmed (total ${confirmed.length}); spent ${Math.round(budget.spent() / 1000)}k`)
-    if (added === 0) break // dry round — stop looping
+    const verified = await parallel(ranked.map((f) => () => {
+      const n = votesFor(f.severity)
+      if (n === 0 || aborted) return Promise.resolve({ ...f, real: false }) // LOW is not worth a vote
+      return parallel(Array.from({ length: n }, (_, i) => () =>
+        A(
+          `Adversarially verify — try to REFUTE with evidence (cite file:line). Default real=false ` +
+          `if uncertain.\n${f.severity} ${f.file}:${f.line} — ${f.summary}\n(skeptic ${i + 1})`,
+          { phase: 'Verify', label: `verify:${f.file}:${f.line}`, schema: VERDICT_SCHEMA },
+        ),
+      )).then((votes) => {
+        const good = votes.filter(Boolean)
+        return { ...f, real: good.length > 0 && good.filter((v) => v.real).length * 2 >= good.length }
+      })
+    }))
+
+    const added = verified.filter((f) => f && f.real)
+    confirmed.push(...added)
+    log(`round ${round}: reviewed ${activeReviewers.length}, ${fresh.length} fresh, +${added.length} confirmed; agents=${agentCount} spent=${Math.round(budget.spent() / 1000)}k`)
+    if (added.length === 0) break // dry round — stop
   }
 
-  // -- Resolve confirmed findings (CRITICAL/HIGH/MEDIUM must be fixed) -------
+  // -- Resolve confirmed CRITICAL/HIGH/MEDIUM -------------------------------
   phase('Resolve')
   const mustFix = confirmed.filter((f) => f.severity !== 'LOW')
-  if (mustFix.length && !capped()) {
-    await agent(
-      `Resolve these verified findings — fix each, or justify it inline with a code comment. ` +
-      `Do not "fix" non-bugs; do not weaken tests.\n` +
+  if (mustFix.length && !aborted) {
+    await A(
+      `Resolve these verified findings — fix each, or justify inline with a code comment. Do not ` +
+      `"fix" non-bugs; NEVER edit tests/specs to make them pass.\n` +
       mustFix.map((f) => `- ${f.severity} ${f.file}:${f.line} — ${f.summary}`).join('\n'),
       { phase: 'Resolve', label: 'resolve' },
     )
   }
 
-  // -- Full gate through gate-summary; repair loop; HARD STOP if still red ---
+  // -- Gate: FAST gate with bounded source-only repair; SLOW gate ONCE, no loop
   phase('Gate')
-  let gate = { green: false, summary: 'not run' }
+  let fast = { green: false, summary: 'not run' }
   let repairs = 0
-  while (repairs <= MAX_GATE_REPAIRS) {
-    gate = await agent(
-      `Run the full gate through \`bash scripts/gate-summary.sh "<label>" "<command>"\` for each ` +
-      `of: unit, lint, tsc (tsconfig.ci if present), build, e2e, and any Supabase/RALPH checks ` +
-      `the repo has. Report only PASS/failing-excerpt per gate. Return green=true only if EVERY ` +
-      `gate passed for real (a skip is NOT a pass).`,
-      { phase: 'Gate', label: `gate:attempt-${repairs}`, schema: GATE_SCHEMA },
-    )
-    if (gate.green) break
+  while (repairs <= MAX_GATE_REPAIRS && !aborted) {
+    fast = (await A(
+      `Run the FAST gate through \`bash scripts/gate-summary.sh "<label>" "<command>"\`: lint, ` +
+      `tsc (tsconfig.ci if present), and unit tests. Report PASS/failing-excerpt per gate. Return ` +
+      `green=true only if ALL passed for real (a skip is NOT a pass). Do NOT run build or e2e here.`,
+      { phase: 'Gate', label: `gate:fast-${repairs}`, schema: GATE_SCHEMA },
+    )) || { green: false, summary: 'aborted' }
+    if (fast.green || aborted) break
     repairs += 1
-    if (repairs > MAX_GATE_REPAIRS || capped()) break
-    await agent(
-      `The gate is RED. Root-cause and fix (including pre-existing failures — verify with ` +
-      `git log ${baseBranch}..HEAD before blaming this change). Never weaken a test.\n${gate.summary}`,
-      { phase: 'Gate', label: `gate:repair-${repairs}`, schema: GATE_SCHEMA },
+    if (repairs > MAX_GATE_REPAIRS) break
+    await A(
+      `The FAST gate is RED. Fix SOURCE only. NEVER edit tests/specs, and do NOT touch e2e. If the ` +
+      `failure is pre-existing or flaky rather than caused by this change (verify with ` +
+      `git log ${baseBranch}..HEAD), STOP and report it instead of forcing green.\n${fast.summary}`,
+      { phase: 'Gate', label: `gate:repair-${repairs}` },
     )
   }
 
+  // Slow gate (build + e2e) runs AT MOST ONCE, never in a loop, and only for a
+  // non-trivial UI/build-affecting change whose fast gate is already green.
+  let slow = { green: true, summary: 'skipped (trivial / no UI / fast not green)' }
+  const needSlow = !trivial && fast.green && (flags.TOUCHES_UI || flags.TOUCHES_API) && !aborted && budget.spent() < MAX_BUDGET
+  if (needSlow) {
+    slow = (await A(
+      `Run the SLOW gate ONCE (no repair loop): build, e2e (Playwright), and any Supabase/RALPH ` +
+      `checks, each via gate-summary.sh. Return green + a summary. Do NOT edit tests to pass.`,
+      { phase: 'Gate', label: 'gate:slow', schema: GATE_SCHEMA },
+    )) || { green: false, summary: 'aborted' }
+  }
+  const gateGreen = fast.green && slow.green
+
   // -- Ship: commit, push named branch, open do-NOT-merge PR ----------------
-  //    Green → normal PR. Red (repairs exhausted) → draft/failing PR + diagnosis.
   phase('Ship')
-  const ship = await agent(
-    `Commit per logical step and push the named branch (only that branch) off ${baseBranch}. ` +
-    `Open a Pull Request marked "do NOT merge to main without review". ` +
-    (gate.green
-      ? `The gate is GREEN — open a normal PR.`
-      : `The gate is RED after ${MAX_GATE_REPAIRS} repair attempts — open a DRAFT PR titled ` +
-        `"[gate-red] …" with the failing-gate diagnosis in the body. Do NOT force it green.`) +
-    ` Include a substantive PR body (inventory, decisions, gate results). If a migration exists, ` +
-    `post the Supabase Migration Required comment (filenames + one-line each + "safe to run") ` +
-    `and note it was NOT applied to prod (human-gated). Otherwise post "No Supabase action ` +
-    `needed for this branch." Return the PR URL as text.`,
+  const ship = await A(
+    `Commit per logical step and push the named branch (only that branch) off ${baseBranch}. Open ` +
+    `a PR marked "do NOT merge to main without review". ` +
+    (gateGreen
+      ? `Gate GREEN — open a normal PR.`
+      : `Gate RED — open a DRAFT PR titled "[gate-red] …" with the failing diagnosis; do NOT force ` +
+        `it green.`) +
+    ` Substantive body (inventory, decisions, gate results). If a migration exists, post the ` +
+    `Supabase Migration Required comment and note it was NOT applied to prod (human-gated); else ` +
+    `post "No Supabase action needed for this branch." Return the PR URL as text.`,
     { phase: 'Ship', label: 'ship' },
   )
 
-  // -- Gap-audit against the original task's Definition of Done -------------
+  // -- Gap-audit ------------------------------------------------------------
   phase('Gap-audit')
-  const gapAudit = await agent(
-    `Re-read the original task and audit item-by-item, labeling each: ✅ done & verified / ` +
-    `⚠️ consciously omitted (with reason) / ⛔ genuinely open / 🧹 housekeeping. Be honest — ` +
-    `only claim what passed its gate.\n\nTASK:\n${task}\n\nCONFIRMED FINDINGS RESOLVED: ` +
-    `${mustFix.length}\nGATE GREEN: ${gate.green}\nPR: ${ship}`,
+  const gapAudit = await A(
+    `Audit the original task item-by-item: ✅ done & verified / ⚠️ consciously omitted (reason) / ` +
+    `⛔ open / 🧹 housekeeping. Only claim what passed its gate.\n\nTASK:\n${task}\nFIXED: ` +
+    `${mustFix.length}  GATE GREEN: ${gateGreen}  PR: ${ship}`,
     { phase: 'Gap-audit', label: 'gap-audit' },
   )
 
+  return finish(ship, { green: gateGreen, summary: `fast=${fast.summary}; slow=${slow.summary}` }, confirmed, round, gapAudit)
+}
+
+function finish(prUrl, gate, confirmed, rounds, gapAudit) {
   return {
-    prUrl: ship,
-    gateGreen: gate.green,
-    gateSummary: gate.summary,
-    confirmedFindings: confirmed.length,
-    mustFixResolved: mustFix.length,
-    reviewRounds: round,
+    prUrl: prUrl || null,
+    gateGreen: !!(gate && gate.green),
+    gateSummary: gate ? gate.summary : 'n/a',
+    confirmedFindings: confirmed ? confirmed.length : 0,
+    reviewRounds: rounds || 0,
+    agentsSpawned: agentCount,
     tokensSpent: budget.spent(),
-    cappedAtMaxBudget: cappedEarly || capped(),
-    gapAudit,
+    aborted,
+    cappedReason: aborted ? (agentCount >= MAX_AGENTS ? `MAX_AGENTS (${MAX_AGENTS})` : `MAX_BUDGET (${MAX_BUDGET})`) : null,
+    gapAudit: gapAudit || null,
   }
 }
 
