@@ -42,10 +42,15 @@ If the task portion is empty, ask the user for the task prompt and stop.
    never force-commits red, never marks a skip as a pass.
 3. **Prod-migration apply stays human.** Ship *writes* migrations and includes them in the PR,
    but does **NOT** apply them to prod. Prod migration application is human-gated, like merge.
-4. **Token ceiling.** The engine self-caps at **`MAX_BUDGET = 750_000`** output tokens
-   (`budget.spent()`). On reaching it, ship degrades gracefully — finishes the current phase,
-   opens the PR with what it has, and reports "capped at MAX_BUDGET, depth reduced". Never a
-   silent truncation.
+4. **Hard ceilings that actually fire mid-flight.** Before EVERY agent spawn the engine checks
+   both a **budget cap** (`MAX_BUDGET = 750_000` output tokens via `budget.spent()`) and an
+   **agent-count cap** (`MAX_AGENTS`, budget-scaled, default 60). On either, it aborts to the
+   ship step, opens the PR with what it has, and reports the cap reason — never a silent
+   truncation or a runaway. Depth is also **scaled to the diff**: a trivial (comment/doc/config)
+   change uses a minimal reviewer set, skips build/e2e, and skips deep verify. The gate runs a
+   FAST loop (lint/tsc/unit, source-only repairs that never edit tests) and a SLOW pass
+   (build/e2e) **at most once, never in a loop**. Wall-clock is NOT enforceable in-script (the
+   runtime forbids `Date`); watch `/workflows` and `TaskStop` if a run stalls.
 5. **Same repo conventions as build** — branch from `main`, push only the named branch,
    migration comment on the PR, Windows/PowerShell host rules, graceful degradation when a
    repo gate (Supabase checks, RALPH, tsconfig.ci) is absent.
