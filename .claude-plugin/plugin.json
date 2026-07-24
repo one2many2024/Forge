@@ -1,6 +1,6 @@
 {
   "name": "forge",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "End-to-end feature arc — babysitter PLAN then EXECUTE with full orchestration (reuse-audit, parallel review battery, TDD, full gate, human breakpoints, do-NOT-merge PR), closing with an 'anything left out?' gap-audit.",
   "author": {
     "name": "Eli Gur"
