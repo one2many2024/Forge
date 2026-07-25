@@ -1,75 +1,71 @@
 # Forge
 
-**One plugin that ships a feature end to end — with the discipline baked in.**
+**One command that ships a feature end to end — with the discipline baked in.**
 
-Forge runs a full feature arc on top of the [babysitter](https://github.com/a5c-ai/babysitter)
-run engine — reuse-audit → plan → TDD → implement → parallel review battery → gate →
-do-NOT-merge PR → gap-audit — in two modes:
+`/forge:forge "<your task>"` runs a two-step orchestration arc on top of the
+[babysitter](https://github.com/a5c-ai/babysitter) run engine:
 
-1. **`/forge:build "<task>"`** — interactive. Pauses at two human breakpoints: a design-gate
-   after the core design, and a final sign-off before commit/PR. The default for most work.
-2. **`/forge:ship "<task>" [+<budget>]`** — autonomous. No pauses; runs start-to-finish on a
-   deterministic Workflow engine and opens a do-NOT-merge PR on its own, then reports back.
-3. **`/forge:help`** — prints the full usage guide, including which mode to use when.
+1. **PLAN** — a reuse-audit, then a written, reviewable execution plan (nothing is built yet).
+2. **EXECUTE** — drives the plan to a pull request with a parallel review battery, test-driven
+   development, the full quality gate, and human approval breakpoints.
+3. **GAP-AUDIT** — closes by telling you, honestly, *what (if anything) was left out*.
 
 It's the difference between "write me a feature" and "plan it, build it test-first, review it
 from six angles, gate it, open a do-NOT-merge PR, and tell me what's still open."
 
 ---
 
-## The two modes
+## What the arc does
 
-### `/forge:build "<task>"` — guided
-
+### Phase A — PLAN (pauses for your approval)
 - **Phase 0 reuse-audit** — scans existing migrations, routes, env vars, dependencies, and
   imports so the plan *extends* what's there instead of duplicating it, and flags where the
   task's stated assumptions are wrong.
+- Picks a **process shape** (flat phase-list for well-defined work; a hypotheses tree when the
+  first step is "investigate").
 - Authors a babysitter **process** with drift-resistant prompts (specs read at run time, not
   paraphrased) and tests ordered *before* implementation.
-- **Presents the plan and pauses for your approval.** Nothing is built yet.
-- After approval: read-before-write, **test-driven** (author from the contract, confirm RED,
-  implement to GREEN), then the **parallel pre-commit review battery** — `code-reviewer`,
-  `security-reviewer`, `typescript-reviewer`, `performance-optimizer`, `refactor-cleaner`,
-  `silent-failure-hunter` (plus DB/RLS/API-security lenses when relevant). Every
-  CRITICAL/HIGH/MEDIUM is resolved; false positives are refuted with evidence.
+- Presents the plan, asks any real decisions, and **stops for your go-ahead**.
+
+### Phase B — EXECUTE (after approval)
+- Read-before-write; traces the runtime call path for brownfield changes.
+- **Test-driven**: author from the contract, confirm RED, implement to GREEN.
+- **Parallel pre-commit review battery** — `code-reviewer`, `security-reviewer`,
+  `typescript-reviewer`, `performance-optimizer`, `refactor-cleaner`, `silent-failure-hunter`
+  (plus DB/RLS/API-security lenses when relevant). Every CRITICAL/HIGH/MEDIUM is resolved;
+  false positives are refuted with evidence.
 - **Human breakpoints** at the design gate and final sign-off (never auto-approved).
 - **Full gate** (fix failures — including pre-existing — before proceeding): unit → build →
   lint → typecheck → E2E → any DB/security checks → spec-lock suites. A skip is not a pass.
 - Commits per step, pushes the named branch only, opens a **do-NOT-merge** PR with a
   substantive body and the appropriate migration comment.
 
-### `/forge:ship "<task>" [+<budget>]` — autonomous
-
-- Same arc, **no human breakpoints**, driven by a deterministic **Workflow engine**
-  (`workflows/forge-auto.js`) rather than improvised turn-by-turn.
-- **Its own trust mechanism in place of the pauses:** CRITICAL/HIGH findings need 2–3
-  independent adversarial "try to refute this" votes before they count as real; MEDIUM gets
-  one vote; LOW isn't verified.
-- **Hard ceilings that fire mid-flight**, checked before every agent spawn — a token-budget
-  cap (750k output tokens by default, wider with an optional `+<budget>` flag) and a
-  budget-scaled agent-count cap. Hitting either aborts to the ship step and opens the PR with
-  what it has, reporting the cap reason — never a silent truncation or a runaway.
-- **Depth scales to the diff** — a trivial (comment/doc/config-only) change uses a minimal
-  reviewer set and skips build/e2e and deep verify.
-- Gate runs a bounded FAST repair loop (lint/tsc/unit, source-only fixes, never edits tests)
-  and a SLOW pass (build/e2e) **at most once, never in a loop**.
-- Same rails as `build`: never merges, writes but never applies a prod migration, pushes only
-  the named branch, same migration-comment convention.
-
-### Phase C — GAP-AUDIT (both modes)
-
+### Phase C — GAP-AUDIT
 Re-reads your task's definition of done and reports each item as ✅ done · ⚠️ consciously
-omitted (with justification) · ⛔ genuinely open · 🧹 housekeeping — plus the PR link. Only
-claims completion for work that actually passed its gate.
+omitted (with justification) · ⛔ genuinely open · 🧹 housekeeping — plus the PR link.
 
----
+### Phase D — RUN SUMMARY
+Closes every run (build *and* ship) with one compact, fixed-format block — not a hand-written
+recap:
+- a **per-phase / per-step token table** (Recon / Design / Tests / Implementation / Review
+  battery / Resolve / …), one row per agent, plus an **Orchestration (main-loop)** row and a
+  **TOTAL**;
+- a **rule-based verdict** — 🟢 defensible / 🟡 heavy-justify / 🔴 runaway — from agent-count ÷
+  changed-files (and the budget, for ship), so a runaway is flagged automatically, not by feel;
+- the **`## Open items`** parsed from `SKIPPED.md`, with a 🆕 on anything added this run.
 
-## What stays human in both modes (never automated)
+The numbers come from `scripts/forge-summary.mjs`, which reads the Claude Code **session
+transcript** — the on-disk record of per-turn `usage` for the orchestration loop and every
+subagent's reported `subagent_tokens`. Output tokens are the headline.
 
-- **Merge to `main`** — always requires human review. Forge only ever opens a do-NOT-merge PR.
-- **Applying a migration to prod** — Forge writes the migration into the PR; a human applies it.
-- **A red gate is never bypassed** — no weakened tests, no skips-as-pass. `build` asks you;
-  `ship` opens a failing/draft PR with the diagnosis.
+> **⚠️ Accuracy disclaimer — please read.** The run-summary's token counts, timing, totals, and
+> verdict are derived from the session transcript on a **best-effort basis** and are provided
+> **"as true and accurate as we could measure."** They are approximations that may be affected by
+> transcript-format changes, un-instrumented or background work, retries, prompt caching, rounding,
+> or measurement gaps, and are intended for **relative, informational guidance only** — *not* for
+> billing, cost accounting, or any authoritative accounting of usage. Forge and its authors make
+> **no warranty** as to their accuracy and accept **no liability** for any decision made in reliance
+> on them. Your AI provider's own usage and billing records are the sole source of truth.
 
 ---
 
@@ -82,20 +78,14 @@ author's machine): `code-reviewer`, `security-reviewer`, `typescript-reviewer`,
 agent with one of these names, yours takes precedence; if a named agent is missing, the arc
 falls back to a general-purpose agent with the same review lens — it never skips a review.
 
-Also included: `scripts/forge-scope.sh` (deterministic changed-file set + `TOUCHES_*` flags
-that gate which domain specialists get spawned) and `scripts/gate-summary.sh` (runs a gate
-command and emits only its verdict — one line on pass, only the failing excerpt on fail — so
-kilobytes of green log never enter context).
-
 ---
 
 ## Requirements
 
 - **[Claude Code](https://claude.com/claude-code)**.
-- **[babysitter](https://github.com/a5c-ai/babysitter)** — the run engine `build` orchestrates.
+- **[babysitter](https://github.com/a5c-ai/babysitter)** — the run engine Forge orchestrates.
   It's installed as step 1 of the flow below (Forge also preflights for it and tells you how to
-  install if it's missing). `ship` additionally needs the `Workflow` tool available in the
-  session.
+  install if it's missing).
 
 ## Install
 
@@ -109,31 +99,26 @@ claude plugin marketplace add one2many2024/Forge
 claude plugin install --scope user forge@forge
 ```
 
-Restart Claude Code, then either:
+Restart Claude Code, then:
 
 ```
-/forge:build "Add a GET /api/health route returning { status: 'ok', ts }, with a unit test. Branch feat/health-endpoint."
+/forge:forge "Add a GET /api/health route returning { status: 'ok', ts }, with a unit test. Branch feat/health-endpoint."
 ```
 
-or, for a well-scoped task you want to hand off entirely:
+> **Command name:** Claude Code namespaces every plugin command by its plugin, so the
+> command is `/forge:forge` (just as babysitter's is `/babysitter:plan`). A bare `/forge`
+> will not resolve.
 
-```
-/forge:ship "Add a GET /api/health route returning { status: 'ok', ts }, with a unit test. Branch feat/health-endpoint."
-```
-
-Run `/forge:help` any time for the full guide to both modes.
-
-> **Command names:** Claude Code namespaces every plugin command by its plugin, so the
-> commands are `/forge:build`, `/forge:ship`, and `/forge:help` (just as babysitter's is
-> `/babysitter:plan`). A bare `/forge` will not resolve.
+Forge will produce a plan, pause for your approval, execute it through the gate, open a
+do-NOT-merge PR, and finish with the gap-audit.
 
 ## Usage notes
 
 - The task prompt is free-form — include ground truth, constraints, branch name, and the
   definition of done; the richer the prompt, the tighter the arc.
 - Forge **never merges** — it opens the PR for you to review and merge.
-- `build` pauses twice (plan approval, final sign-off) and at any design gate the process
-  defines; you can approve in a word. `ship` runs straight through instead.
+- It pauses twice (plan approval, final sign-off) and at any design gate the process defines;
+  you can approve in a word.
 
 ## License
 

@@ -1,26 +1,25 @@
 # Changelog
 
-## 0.3.1
+## 0.4.0
 
-- Split the single `/forge:forge` command into two explicit modes:
-  - **`/forge:build "<task>"`** — the interactive arc, unchanged in spirit from 0.1.0: babysitter
-    **PLAN** (reuse-audit → author process → present → pause for approval) then **EXECUTE**
-    (review battery, TDD-first, full gate, human breakpoints, do-NOT-merge PR), closing with the
-    gap-audit.
-  - **`/forge:ship "<task>" [+<budget>]`** — new autonomous mode. Runs the same arc with no
-    human breakpoints, driven by a deterministic Workflow engine (`workflows/forge-auto.js`).
-    Adversarially verifies CRITICAL/HIGH findings with 2–3 independent refutation votes before
-    counting them as real. Enforces hard mid-flight ceilings on agent count and token budget
-    (750k output tokens by default; wider with `+<budget>`) — hitting either aborts to the ship
-    step and opens the PR with what it has, reporting the cap reason. Depth scales to the diff;
-    gate runs a bounded FAST repair loop plus a SLOW pass at most once, never in a loop.
-  - **`/forge:help`** — new. Prints the full usage guide for both modes and when to use each.
-- Added `scripts/forge-scope.sh` — deterministic changed-file set + `TOUCHES_DB/API/AUTH/PERF`
-  flags, replacing model self-reported diff scoping. Domain specialists are now gated on these
-  flags rather than always fanning out.
-- Added `scripts/gate-summary.sh` — wraps each gate command and emits only its verdict (one line
-  on pass, filtered failing excerpt on fail), keeping kilobytes of green log out of context.
-- The bare command name `/forge:forge` no longer exists.
+- **Closing run-summary + token meter (`scripts/forge-summary.mjs`).** Every run (build and
+  ship) now ends with a compact, fixed-format summary instead of a hand-tallied prose recap:
+  - A **per-phase / per-step token table** (Recon / Design / Tests / Implementation / Review
+    battery / Resolve / …), one row per agent, plus an **Orchestration (main-loop)** row and a
+    measured **TOTAL**. Numbers are read from the authoritative on-disk meter — the Claude Code
+    session transcript, which records per-turn `usage` (orchestration loop) and every subagent's
+    `subagent_tokens` — so totals are **measured, not estimated**. Output tokens are the headline
+    (matches the statusline `↓ tokens` + the Workflow `budget.spent()`).
+  - A **rule-based defensibility verdict** (🟢 defensible / 🟡 heavy-justify / 🔴 runaway) from
+    agent-count ÷ changed-files (and the budget for ship), so the 5M-on-a-one-line pattern is
+    flagged automatically, not by vibe.
+  - The **`## Open items`** list parsed from `SKIPPED.md`, with a 🆕 marker on items added this
+    run (detected via `git diff <base> -- SKIPPED.md`).
+- **`SKIPPED.md` convention:** genuinely-open / owner-action items go under a `## Open items`
+  heading as `- [ ]` checkboxes (flip to `- [x]` when resolved) so the meter can parse them.
+- build.md gains **Phase D — RUN SUMMARY** (always runs); ship.md prints the same block after the
+  Workflow returns. The meter is journal-independent (reads only the session transcript), so it
+  works identically for babysitter (build) and Workflow (ship).
 
 ## 0.1.0
 
