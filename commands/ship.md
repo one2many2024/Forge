@@ -31,8 +31,19 @@ If the task portion is empty, ask the user for the task prompt and stop.
   implement → scope → parallel review battery → adversarial verify → resolve → full gate →
   commit → push → **do-NOT-merge PR** → gap-audit, then returns a structured report.
 - **After it returns**, surface to the user: the **PR link**, the **gap-audit** table
-  (done / consciously-omitted / open / housekeeping), the **gate status**, and the run's
-  **token spend** (`budget.spent()` from the report) — plus whether it **hit the 750k cap**.
+  (done / consciously-omitted / open / housekeeping), the **gate status**, and whether it
+  **hit the 750k cap**. Then print the **closing run-summary** by running the shipped meter
+  from this plugin's `scripts/` (the Workflow can't do fs; the main loop runs it), passing the
+  workflow's reported `budget.spent()` target for the verdict:
+  ```
+  node "<this plugin>/scripts/forge-summary.mjs" --base main --budget <the +budget, if any>
+  ```
+  Print its output **verbatim** — the per-phase/per-step token table (from the session
+  transcript's per-agent `subagent_tokens` + main-loop `usage`), the rule-based
+  🟢/🟡/🔴 verdict (cross-checked against the budget), and the `## Open items` from `SKIPPED.md`
+  (🆕 on newly-added). Do NOT re-tally tokens by hand or restate it as prose. Record any
+  genuinely-open / owner-action items under a `## Open items` heading with `- [ ]` checkboxes so
+  the meter can parse them.
 
 ## Hard rails (non-negotiable in auto mode — autonomy removes PAUSES, not SAFEGUARDS)
 

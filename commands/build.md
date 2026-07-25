@@ -37,7 +37,9 @@ phases). If `babysitter:babysit` is not installed, tell the user to install it a
   confirmation) or **"No Supabase action needed for this branch."**
 - **A skip is not a pass.** Run every gate for real where creds exist; otherwise record it
   in `SKIPPED.md` with the exact command, why it's blocked, and how to unblock — last resort,
-  not an exit ramp.
+  not an exit ramp. Put genuinely-open / owner-action items under a **`## Open items`** heading
+  as `- [ ]` checkboxes (flip to `- [x]` when resolved) so the closing run-summary can parse
+  and flag them (newly-added ones get a 🆕).
 - **Windows/PowerShell host:** prefer PowerShell for system ops; never write inline compound
   shell chains (`&`, `;`, `$(...)`) — put multi-step shell work in a `scripts/` file.
 - **Never fabricate a breakpoint approval.** In interactive mode, always ask the user and
@@ -81,9 +83,10 @@ Invoke the **babysitter:babysit** skill (Skill tool) in plan-only mode for this 
    structured findings, always-on `code`/`security`/`typescript` + flag-gated domain
    specialists); a human design-gate breakpoint after the core design; the full gate **run
    through `scripts/gate-summary.sh`** (pass / failing-excerpt only); a final sign-off
-   breakpoint; commit/push/PR-never-merge + migration comment. Copy both helper scripts from
-   this plugin into the repo's `scripts/` on first use so the process calls committed, portable
-   copies.
+   breakpoint; commit/push/PR-never-merge + migration comment. Copy the helper scripts from
+   this plugin into the repo's `scripts/` on first use so the arc calls committed, portable
+   copies — `forge-scope.sh` + `gate-summary.sh` for the process's own tasks, and
+   `forge-summary.mjs` for the closing run-summary (Phase D).
 5. **Present** the plan at a high level with the reuse-audit block, then use **AskUserQuestion**
    for any genuine decisions (design choices, scope, the daily-cap/threshold-style constants).
    **Then PAUSE and ask the user to approve the plan before executing.** Do not create the run.
@@ -158,5 +161,33 @@ list** and go through it item by item. Report back to the user, honestly labelin
 - 🧹 **Housekeeping** — branch state, untracked run/process artifacts, running dev servers,
   local stacks — and offer to clean them up.
 
-End with the PR link(s) and the one-line status. Only claim completion for work that actually
-passed its gate; if something failed or was skipped, say so plainly.
+Keep this to the point — the compact table below (Phase D) is the closer, not a prose essay.
+Only claim completion for work that actually passed its gate; if something failed or was
+skipped, say so plainly.
+
+---
+
+## PHASE D — RUN SUMMARY (always; the closing block for every run)
+
+Run the shipped meter and print its output **verbatim** as the final block — do NOT re-tally
+tokens by hand or rewrite it as prose:
+
+```
+node scripts/forge-summary.mjs --base <baseBranch>
+```
+
+(`scripts/forge-summary.mjs` was copied into the repo in Phase A; if it is missing, run it from
+this plugin's `scripts/` directory instead. Pass the same `--base` used for the diff.) It reads
+the authoritative on-disk meter — the Claude Code session transcript, which records per-turn
+`usage` for the orchestration loop and every subagent's `subagent_tokens` — and prints:
+
+- a **per-phase / per-step token table** (Recon / Design / Tests / Implementation / Review
+  battery / Resolve / …), each step = one agent, plus an **Orchestration (main-loop)** row and
+  a measured **TOTAL** (output tokens are the headline; no estimation);
+- a **rule-based verdict** — 🟢 defensible / 🟡 heavy-justify / 🔴 runaway — computed from
+  agent-count ÷ changed-files (and the budget for ship), so it flags the 5M-on-a-one-line
+  pattern automatically rather than by vibe;
+- the **`## Open items`** from `SKIPPED.md`, with a 🆕 on any added this run.
+
+Print the block, then end with the PR link + one-line status. This section is mandatory and
+runs even if an earlier phase was skipped or failed.
