@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.4.1
+
+- **Fix: the `## Open items` list never parsed on a CRLF checkout.**
+  `scripts/forge-summary.mjs` split `SKIPPED.md` on a bare line-feed, which leaves a
+  trailing carriage return on every line under Windows/CRLF. JavaScript treats CR as a
+  regex LINE TERMINATOR, so the dot in the checkbox pattern could not match it and
+  EVERY item failed to parse. The section was found, zero items were collected, and
+  Phase D printed **"Open items: none — all boxes checked ✅"** regardless of what the
+  file actually contained.
+
+  A silent false negative on the one section whose entire job is surfacing unfinished
+  work — the summary was most confident exactly where it was blindest. It now splits on
+  a CRLF-tolerant pattern.
+
+  Two things worth knowing when auditing whether past runs were affected: the parser
+  takes the **FIRST** `## Open items` heading in the file, so historical per-PR sections
+  sitting above the live list will shadow it; and only `##` matches, not `###`.
+
 ## 0.4.0
 
 - **Closing run-summary + token meter (`scripts/forge-summary.mjs`).** Every run (build and
