@@ -128,7 +128,13 @@ else { verdict = '🟡 HEAVY — justify'; why = `${agents.length} agents vs ${c
 function skippedOpenItems() {
   const p = path.join(CWD, 'SKIPPED.md')
   if (!fs.existsSync(p)) return { section: false, items: [] }
-  const lines = fs.readFileSync(p, 'utf-8').split('\n')
+  // Split on a CRLF-tolerant pattern. On a Windows checkout every line keeps a
+  // trailing carriage return, which JS treats as a regex line terminator, so the
+  // dot in the checkbox pattern below cannot match it and EVERY item fails to
+  // parse. Symptom: the section is found, zero items are collected, and the run
+  // summary reports no open items regardless of what SKIPPED.md contains — a
+  // silent false-negative on the one section meant to surface unfinished work.
+  const lines = fs.readFileSync(p, 'utf-8').split(/\r?\n/)
   const start = lines.findIndex((l) => /^##\s+Open items/i.test(l))
   if (start < 0) return { section: false, items: [] }
   const items = []
