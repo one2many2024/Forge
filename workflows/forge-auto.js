@@ -58,9 +58,12 @@ const keyOf = (f) => `${f.file}:${f.line}:${f.summary}`
 // --- schemas ---
 const SCOPE_SCHEMA = {
   type: 'object',
-  required: ['files', 'flags', 'trivial'],
+  required: ['files', 'flags', 'trivial', 'branch'],
   properties: {
     files: { type: 'array', items: { type: 'string' } },
+    // The branch the implement step actually created. Every later agent is
+    // pinned to it — see BRANCH GUARD below.
+    branch: { type: 'string' },
     // trivial = comment/doc/config-only, no logic/type/test/behaviour change.
     trivial: { type: 'boolean' },
     flags: {
@@ -96,7 +99,16 @@ const FINDINGS_SCHEMA = {
   },
 }
 const VERDICT_SCHEMA = { type: 'object', required: ['real', 'reason'], properties: { real: { type: 'boolean' }, reason: { type: 'string' } } }
-const GATE_SCHEMA = { type: 'object', required: ['green', 'summary'], properties: { green: { type: 'boolean' }, summary: { type: 'string' } } }
+// `branch` is required so a gate result carries the branch it MEASURED. Agents
+// share one working tree; a checkout by any one of them can move the tree under
+// the others. On the 2026-08-03 branch-C run the fast gate reported PASS with
+// "Branch: docs/linkedin-export-verified" — a different branch entirely — and
+// the run then reported a gate result for work it had never compiled.
+const GATE_SCHEMA = {
+  type: 'object',
+  required: ['green', 'summary', 'branch'],
+  properties: { green: { type: 'boolean' }, summary: { type: 'string' }, branch: { type: 'string' } },
+}
 
 async function run() {
   if (!task) return { error: 'forge-ship: no task provided (args.task is empty).' }
@@ -125,15 +137,30 @@ async function run() {
   // -- Scope: changed-file set, TOUCHES_* flags, and a TRIVIAL judgement -----
   const scope = await A(
     `Run \`bash scripts/forge-scope.sh ${baseBranch}\` (copy it from this plugin into scripts/ ` +
-    `first if absent). Return its changed-file set and flags. Also set TOUCHES_UI (any .tsx/.jsx ` +
-    `or component/page change) and trivial=true ONLY if the whole diff is comment/doc/config with ` +
-    `zero logic/type/test/behaviour change.`,
+    `first if absent). Return its changed-file set and flags. Also return \`branch\` = the output ` +
+    `of \`git rev-parse --abbrev-ref HEAD\` (the branch implement created — NOT ${baseBranch}), ` +
+    `set TOUCHES_UI (any .tsx/.jsx or component/page change) and trivial=true ONLY if the whole ` +
+    `diff is comment/doc/config with zero logic/type/test/behaviour change.`,
     { phase: 'Implement', label: 'scope', schema: SCOPE_SCHEMA },
   )
   const files = (scope && scope.files) ? scope.files : []
   const flags = (scope && scope.flags) ? scope.flags : {}
   const trivial = !!(scope && scope.trivial)
+  const branch = (scope && scope.branch) ? String(scope.branch).trim() : ''
   const scopeLine = files.length ? files.join('\n') : '(scope empty — review the working diff)'
+
+  // --- BRANCH GUARD ---------------------------------------------------------
+  // Every agent from here on shares ONE working tree. Without this, a checkout
+  // by any agent silently relocates the review/gate/ship steps to whatever
+  // branch the tree happens to be on, and the run reports results for code it
+  // never looked at. Prepended to every downstream prompt; the gate result also
+  // reports the branch it measured, and a mismatch is treated as NOT green.
+  const onBranch = branch
+    ? `WORKING BRANCH: \`${branch}\`. Before anything else run ` +
+      `\`git rev-parse --abbrev-ref HEAD\`; if it is not \`${branch}\`, run \`git checkout ${branch}\`. ` +
+      `Never review, gate or measure any other branch — say so and stop instead.\n\n`
+    : ''
+  if (!branch) log('WARNING: scope did not report a branch — the branch guard is INACTIVE for this run')
 
   // Reviewers: trivial ⇒ a minimal lens set; else the full battery gated by flags.
   const activeReviewers = trivial
@@ -155,7 +182,7 @@ async function run() {
 
     const roundFindings = (await parallel(activeReviewers.map((r) => () =>
       A(
-        `${r}: review ONLY these changed files (never audit the repo):\n${scopeLine}\n\nRound ` +
+        `${onBranch}${r}: review ONLY these changed files (never audit the repo):\n${scopeLine}\n\nRound ` +
         `${round}. Return compact findings — severity · file:line · one-line. If the change is ` +
         `genuinely fine, return an EMPTY findings array; do not invent issues.`,
         { phase: 'Review', label: `review:${r}`, schema: FINDINGS_SCHEMA },
@@ -175,7 +202,7 @@ async function run() {
       if (n === 0 || aborted) return Promise.resolve({ ...f, real: false }) // LOW is not worth a vote
       return parallel(Array.from({ length: n }, (_, i) => () =>
         A(
-          `Adversarially verify — try to REFUTE with evidence (cite file:line). Default real=false ` +
+          `${onBranch}Adversarially verify — try to REFUTE with evidence (cite file:line). Default real=false ` +
           `if uncertain.\n${f.severity} ${f.file}:${f.line} — ${f.summary}\n(skeptic ${i + 1})`,
           { phase: 'Verify', label: `verify:${f.file}:${f.line}`, schema: VERDICT_SCHEMA },
         ),
@@ -196,7 +223,7 @@ async function run() {
   const mustFix = confirmed.filter((f) => f.severity !== 'LOW')
   if (mustFix.length && !aborted) {
     await A(
-      `Resolve these verified findings — fix each, or justify inline with a code comment. Do not ` +
+      `${onBranch}Resolve these verified findings — fix each, or justify inline with a code comment. Do not ` +
       `"fix" non-bugs; NEVER edit tests/specs to make them pass.\n` +
       mustFix.map((f) => `- ${f.severity} ${f.file}:${f.line} — ${f.summary}`).join('\n'),
       { phase: 'Resolve', label: 'resolve' },
@@ -209,7 +236,7 @@ async function run() {
   let repairs = 0
   while (repairs <= MAX_GATE_REPAIRS && !aborted) {
     fast = (await A(
-      `Run the FAST gate through \`bash scripts/gate-summary.sh "<label>" "<command>"\`: lint, ` +
+      `${onBranch}Run the FAST gate through \`bash scripts/gate-summary.sh "<label>" "<command>"\`: lint, ` +
       `tsc (tsconfig.ci if present), and unit tests. Report PASS/failing-excerpt per gate. Return ` +
       `green=true only if ALL passed for real (a skip is NOT a pass). Do NOT run build or e2e here.`,
       { phase: 'Gate', label: `gate:fast-${repairs}`, schema: GATE_SCHEMA },
@@ -218,7 +245,7 @@ async function run() {
     repairs += 1
     if (repairs > MAX_GATE_REPAIRS) break
     await A(
-      `The FAST gate is RED. Fix SOURCE only. NEVER edit tests/specs, and do NOT touch e2e. If the ` +
+      `${onBranch}The FAST gate is RED. Fix SOURCE only. NEVER edit tests/specs, and do NOT touch e2e. If the ` +
       `failure is pre-existing or flaky rather than caused by this change (verify with ` +
       `git log ${baseBranch}..HEAD), STOP and report it instead of forcing green.\n${fast.summary}`,
       { phase: 'Gate', label: `gate:repair-${repairs}` },
@@ -231,17 +258,26 @@ async function run() {
   const needSlow = !trivial && fast.green && (flags.TOUCHES_UI || flags.TOUCHES_API) && !aborted && budget.spent() < MAX_BUDGET
   if (needSlow) {
     slow = (await A(
-      `Run the SLOW gate ONCE (no repair loop): build, e2e (Playwright), and any Supabase/RALPH ` +
+      `${onBranch}Run the SLOW gate ONCE (no repair loop): build, e2e (Playwright), and any Supabase/RALPH ` +
       `checks, each via gate-summary.sh. Return green + a summary. Do NOT edit tests to pass.`,
       { phase: 'Gate', label: 'gate:slow', schema: GATE_SCHEMA },
     )) || { green: false, summary: 'aborted' }
+  }
+  // A gate that measured a DIFFERENT branch proves nothing about this one. Treat
+  // the mismatch as red rather than inheriting a green from unrelated code.
+  const measuredWrong = (g) => branch && g && g.branch && String(g.branch).trim() !== branch
+  const wrongBranchGates = [['fast', fast], ['slow', slow]].filter(([, g]) => measuredWrong(g))
+  for (const [which, g] of wrongBranchGates) {
+    log(`GATE DISCARDED — the ${which} gate measured \`${String(g.branch).trim()}\`, not \`${branch}\``)
+    g.green = false
+    g.summary = `measured the WRONG branch (${String(g.branch).trim()} ≠ ${branch}) — result discarded. ${g.summary}`
   }
   const gateGreen = fast.green && slow.green
 
   // -- Ship: commit, push named branch, open do-NOT-merge PR ----------------
   phase('Ship')
   const ship = await A(
-    `Commit per logical step and push the named branch (only that branch) off ${baseBranch}. Open ` +
+    `${onBranch}Commit per logical step and push the named branch (only that branch) off ${baseBranch}. Open ` +
     `a PR marked "do NOT merge to main without review". ` +
     (gateGreen
       ? `Gate GREEN — open a normal PR.`
