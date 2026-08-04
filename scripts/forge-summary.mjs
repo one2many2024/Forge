@@ -64,6 +64,65 @@ if (!sessionFile || !fs.existsSync(sessionFile)) {
   process.exit(2)
 }
 
+// ── locate a Workflow run's transcript dir ────────────────────────────────────
+// /forge:ship drives a background Workflow whose agents NEVER write
+// `subagent_tokens` notifications into the session transcript — they write their
+// own agent-<id>.jsonl under
+//   <projectDir>/<sessionId>/subagents/workflows/wf_<runId>/
+// so a session-only read reports "~0 agents" for a run that spawned dozens. That
+// is what happened on the branch-C ship run (26 agents read as 0). Scan the run
+// dir too, and prefer it whenever the session transcript yielded no agents.
+function newestWorkflowDir(cwd) {
+  const root = projectDir(cwd)
+  if (!fs.existsSync(root)) return null
+  const runs = []
+  for (const session of fs.readdirSync(root)) {
+    const wfRoot = path.join(root, session, 'subagents', 'workflows')
+    if (!fs.existsSync(wfRoot)) continue
+    for (const run of fs.readdirSync(wfRoot)) {
+      if (!run.startsWith('wf_')) continue
+      const dir = path.join(wfRoot, run)
+      try { runs.push({ dir, mtime: fs.statSync(dir).mtimeMs }) } catch { /* unreadable run dir */ }
+    }
+  }
+  if (!runs.length) return null
+  return runs.sort((a, b) => b.mtime - a.mtime)[0].dir
+}
+
+// Derives a display name from the agent's own first user message — the Workflow
+// `label` is not persisted per agent, and inventing one would misgroup phases.
+function labelFromPrompt(text) {
+  const first = String(text || '').split('\n').find((l) => l.trim()) || 'agent'
+  return first.trim().replace(/\s+/g, ' ').slice(0, 48)
+}
+
+function readWorkflowAgents(dir) {
+  const out = []
+  if (!dir || !fs.existsSync(dir)) return out
+  for (const f of fs.readdirSync(dir)) {
+    if (!f.startsWith('agent-') || !f.endsWith('.jsonl')) continue
+    let tokens = 0
+    let name = 'workflow agent'
+    let ts = null
+    let named = false
+    for (const line of fs.readFileSync(path.join(dir, f), 'utf-8').split('\n')) {
+      if (!line.trim()) continue
+      let d; try { d = JSON.parse(line) } catch { continue }
+      if (d.type === 'assistant' && d.message && d.message.usage) {
+        tokens += d.message.usage.output_tokens || 0
+        ts = d.timestamp || ts
+      }
+      if (!named && d.type === 'user' && d.message) {
+        const c = d.message.content
+        const text = typeof c === 'string' ? c : Array.isArray(c) ? (c.find((p) => p && p.type === 'text') || {}).text : ''
+        if (text) { name = labelFromPrompt(text); named = true }
+      }
+    }
+    if (tokens > 0) out.push({ name, tokens, ts })
+  }
+  return out
+}
+
 // ── parse the transcript ───────────────────────────────────────────────────────
 const fmt = (n) => n >= 1e6 ? (n / 1e6).toFixed(2) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(0) + 'K' : String(n)
 let orch = { output: 0, input: 0, cacheRead: 0, turns: 0, firstTs: null, lastTs: null }
@@ -96,6 +155,19 @@ for (const line of fs.readFileSync(sessionFile, 'utf-8').split('\n')) {
     let name = 'agent'
     for (const re of NAME_RES) { const nm = line.match(re); if (nm) { name = nm[1]; break } }
     agents.push({ name, tokens, ts })
+  }
+}
+
+// A ship run's agents live in the Workflow run dir, not the session transcript.
+// Only fall back when the session read found none, so a build run (whose agents
+// DO notify into the session) is never double-counted against a stale ship dir.
+let agentSource = 'session transcript'
+if (!agents.length) {
+  const wfDir = arg('--workflow', null) || newestWorkflowDir(CWD)
+  const wfAgents = readWorkflowAgents(wfDir)
+  if (wfAgents.length) {
+    agents.push(...wfAgents)
+    agentSource = `workflow run ${path.basename(wfDir)}`
   }
 }
 
@@ -173,6 +245,7 @@ L.push(pad('Orchestration (main loop, ' + orch.turns + ' turns)', 40) + padl('�
 L.push(pad('TOTAL (output tokens)', 40) + padl('~' + agents.length, 8) + padl(fmt(grandTotal), 12))
 L.push('─'.repeat(60))
 L.push(`  measured: agents ~${fmt(agentTotal)} + orchestration ${fmt(orch.output)} output${dur != null ? ` · ~${dur >= 60 ? (dur / 60).toFixed(1) + 'h' : dur + 'm'} elapsed (incl. idle waits)` : ''}`)
+L.push(`  agent source: ${agentSource}`)
 L.push('')
 L.push(`Verdict: ${verdict} — ${why}.`)
 L.push('')
