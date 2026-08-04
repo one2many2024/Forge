@@ -186,3 +186,4 @@ MIT © 2026 Eli Gur. See [LICENSE](./LICENSE).
 
 Forge orchestrates, and depends on, the separate **babysitter** plugin, which has its own authors
 and license.
+
