@@ -1,2 +1,13 @@
 # Shell scripts must keep LF endings — CRLF breaks the shebang on *nix and Git Bash.
 *.sh text eol=lf
+
+# Workflow scripts MUST be LF too. The Workflow tool's permission validator
+# rejects any script containing control characters ("script contains control
+# characters that would be hidden in the approval dialog"), and on a Windows
+# checkout with core.autocrlf=true every line of workflows/*.js ends in \r — so
+# /forge:ship cannot launch at all from the installed plugin path. Observed
+# 2026-08-03 on forge 0.4.1; the workaround was running an LF-stripped copy.
+*.js text eol=lf
+*.mjs text eol=lf
+*.md text eol=lf
+*.json text eol=lf

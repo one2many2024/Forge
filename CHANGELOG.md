@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.4.2
+
+Three defects surfaced by the 2026-08-03 branch-C ship run. All three are
+`/forge:ship`-only — `/forge:build` runs in-session on the live checkout and hits
+none of them.
+
+- **Fix: `/forge:ship` could not launch at all on a Windows checkout.** The
+  Workflow tool's permission validator rejects a script containing control
+  characters (*"script contains control characters that would be hidden in the
+  approval dialog"*), and with `core.autocrlf=true` every line of
+  `workflows/forge-auto.js` ends in `\r`. Ship was unlaunchable from the installed
+  plugin path; the workaround was running an LF-stripped copy. `.gitattributes`
+  now pins `*.js`/`*.mjs`/`*.md`/`*.json` to `eol=lf`.
+
+  Note the error names `script`, not `args`, even when the caller passed only
+  `scriptPath` — rewriting the task prompt does not help. Diagnose with Node, not
+  grep: git-bash `grep -c $'\r'` reported 0 CRs on a file that had 284.
+
+- **Fix: the gate could measure a different branch than the one under review.**
+  All agents share ONE working tree, so a checkout by any of them relocates every
+  later step. On the branch-C run the fast gate reported PASS for
+  `docs/linkedin-export-verified` — not the feature branch — and the run then
+  reported that as this branch's gate result. `scope` now returns the working
+  branch, every downstream prompt (review, verify, resolve, gate, repair, slow,
+  ship) is pinned to it, `GATE_SCHEMA` requires the branch each gate MEASURED, and
+  a mismatch is logged and forced to red rather than inherited as green.
+
+- **Fix: the summary meter reported `~0 agents` for every ship run.** Workflow
+  agents never write `subagent_tokens` notifications into the session transcript —
+  they write `agent-<id>.jsonl` under
+  `<projectDir>/<sessionId>/subagents/workflows/wf_<runId>/`. A 26-agent run
+  metered as 0 agents / 28K, understating it by an order of magnitude and feeding
+  a meaningless verdict. The meter now falls back to the newest Workflow run dir
+  when the session read finds no agents (never both, so a build run is not
+  double-counted), names each agent from its own first prompt line, and prints the
+  `agent source:` it used. `--workflow <dir>` pins a specific run.
+
 ## 0.4.1
 
 - **Fix: the `## Open items` list never parsed on a CRLF checkout.**
