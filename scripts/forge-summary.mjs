@@ -12,7 +12,13 @@
 // Usage:
 //   node scripts/forge-summary.mjs [--session <path>] [--base <ref>] [--budget <n>] [--cwd <dir>]
 //   --session  explicit transcript JSONL; else the newest .jsonl under the derived project dir
-//   --base     git base ref for the changed-file count + SKIPPED 🆕 diff (default: main)
+//   --base     git base ref for the changed-file count + SKIPPED 🆕 diff (default: main).
+//              Resolved to origin/<base> when that exists — a local ref of the same name
+//              is routinely stale. See resolveBase().
+//   --since    ISO 8601 cut-off. A transcript spans the whole SESSION, which may hold
+//              several forge runs; pass the run's createdAt to scope the table and the
+//              verdict to ONE run. Without it the footer says so rather than implying a
+//              per-run figure.
 //   --budget   ship's token target (budget.total), for the verdict's spent/budget check
 //   --cwd      repo root (default: process.cwd()) — used to derive the transcript dir + git
 //
@@ -29,6 +35,16 @@ const arg = (k, d) => { const i = argv.indexOf(k); return i >= 0 && argv[i + 1] 
 const CWD = path.resolve(arg('--cwd', process.cwd()))
 const BASE = arg('--base', 'main')
 const BUDGET = Number(arg('--budget', '')) || null
+// A session transcript spans the whole SESSION, which may contain several forge runs back
+// to back. Without a cut-off the table sums all of them and the verdict divides a
+// session-wide agent count by one run's changed files — a number that is accurate and
+// answers the wrong question.
+const SINCE_RAW = arg('--since', null)
+const SINCE = SINCE_RAW ? Date.parse(SINCE_RAW) : null
+if (SINCE_RAW && Number.isNaN(SINCE)) {
+  console.error(`[forge-summary] --since "${SINCE_RAW}" is not a parseable date (want ISO 8601).`)
+  process.exit(2)
+}
 
 // ── ordered agent-name → phase classifier (edit here to retune grouping) ───────
 // First match wins. Keep recon/battery/resolve BEFORE the generic review/implement patterns.
@@ -48,9 +64,23 @@ const phaseOf = (name) => { for (const [re, p] of PHASE_RULES) if (re.test(name)
 
 // ── locate the session transcript ──────────────────────────────────────────────
 function projectDir(cwd) {
-  // Claude Code stores transcripts at ~/.claude/projects/<cwd-with-nonalnum→dashes>/
+  // Claude Code stores transcripts under its CONFIG dir, which is ~/.claude only by
+  // DEFAULT — `CLAUDE_CONFIG_DIR` relocates it, and per-project setups in the wild do
+  // exactly that (e.g. ~/.claude-<project>). Hardcoding ~/.claude does not fail loudly:
+  // if any stale transcript happens to sit there, the meter reads THAT and prints a
+  // confident, wrong table. Observed on signatura for three consecutive runs — "0 agents
+  // / 3K tokens" from a four-day-old unrelated session while the real one held ~827K
+  // across 10 agents. Note this is the same "~0 agents" symptom the Workflow-dir scan
+  // below was added for; that fix addressed a different cause of it, not this one.
   const slug = cwd.replace(/[^A-Za-z0-9]/g, '-') // each non-alnum → one dash, no collapsing (C:\ → C--)
-  return path.join(os.homedir(), '.claude', 'projects', slug)
+  const roots = []
+  if (process.env.CLAUDE_CONFIG_DIR) roots.push(process.env.CLAUDE_CONFIG_DIR)
+  roots.push(path.join(os.homedir(), '.claude'))
+  for (const r of roots) {
+    const candidate = path.join(r, 'projects', slug)
+    if (fs.existsSync(candidate)) return candidate
+  }
+  return path.join(roots[roots.length - 1], 'projects', slug)
 }
 function newestJsonl(dir) {
   if (!fs.existsSync(dir)) return null
@@ -123,6 +153,10 @@ function readWorkflowAgents(dir) {
   return out
 }
 
+// How stale is what we are about to measure? A transcript not written in the last few
+// minutes is almost certainly not the run being summarised.
+const sessionAgeMin = (Date.now() - fs.statSync(sessionFile).mtimeMs) / 60000
+
 // ── parse the transcript ───────────────────────────────────────────────────────
 const fmt = (n) => n >= 1e6 ? (n / 1e6).toFixed(2) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(0) + 'K' : String(n)
 let orch = { output: 0, input: 0, cacheRead: 0, turns: 0, firstTs: null, lastTs: null }
@@ -130,10 +164,21 @@ const agents = []                 // {name, tokens, ts}
 const seen = new Set()            // dedup notifications by ts+tokens (they appear as queue-operation AND user)
 const NAME_RES = [/Agent \\"(.+?)\\" finished/, /Agent "(.+?)" finished/, /Agent &quot;(.+?)&quot; finished/]
 
+// Some notification entries carry no timestamp of their own (they are serialized twice and
+// one copy omits it). Carry the last timestamp seen forward so --since can still place them:
+// the transcript is append-ordered, so the preceding entry's time is a sound lower bound.
+let lastSeenTs = null
+let skippedBefore = 0
+
 for (const line of fs.readFileSync(sessionFile, 'utf-8').split('\n')) {
   if (!line.trim()) continue
   let d; try { d = JSON.parse(line) } catch { continue }
   const ts = d.timestamp || null
+  if (ts) lastSeenTs = ts
+  if (SINCE !== null) {
+    const effective = ts || lastSeenTs
+    if (effective && Date.parse(effective) < SINCE) { skippedBefore++; continue }
+  }
   if (d.type === 'assistant' && d.message && d.message.usage) {
     const u = d.message.usage
     orch.output += u.output_tokens || 0
@@ -183,7 +228,19 @@ const grandTotal = agentTotal + orch.output
 
 // ── git signals for the verdict + SKIPPED diff ─────────────────────────────────
 const git = (cmd) => { try { return execSync(`git ${cmd}`, { cwd: CWD, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() } catch { return '' } }
-let changed = git(`diff --name-only ${BASE}...HEAD`).split('\n').filter(Boolean)
+// PREFER origin/<base>. A local branch ref of the same name is frequently BEHIND its
+// remote — nobody checks out and fast-forwards `main` just to open a PR — and diffing a
+// stale ref silently folds other people's merged commits into "this branch's changed
+// files", inflating the count and skewing the agents-per-file verdict. Measured on
+// signatura: 42 files reported for a real 12-file branch. scripts/forge-scope.sh already
+// resolves the base this way.
+function resolveBase(base) {
+  if (/^origin\//.test(base)) return base
+  const remote = `origin/${base}`
+  return git(`rev-parse --verify --quiet ${remote}`) ? remote : base
+}
+const RESOLVED_BASE = resolveBase(BASE)
+let changed = git(`diff --name-only ${RESOLVED_BASE}...HEAD`).split('\n').filter(Boolean)
 if (!changed.length) changed = git('status --porcelain').split('\n').filter(Boolean).map((l) => l.slice(3))
 const changedFiles = changed.length
 
@@ -215,7 +272,7 @@ function skippedOpenItems() {
     const m = lines[i].match(/^\s*[-*]\s*\[( |x|X)\]\s+(.*)$/)
     if (m && m[1] === ' ') items.push(lines[i].trim().replace(/^[-*]\s*\[ \]\s*/, ''))
   }
-  const added = git(`diff ${BASE} -- SKIPPED.md`) || git('diff -- SKIPPED.md')
+  const added = git(`diff ${RESOLVED_BASE} -- SKIPPED.md`) || git('diff -- SKIPPED.md')
   const addedText = added.split('\n').filter((l) => l.startsWith('+') && !l.startsWith('+++')).join('\n')
   return { section: true, items: items.map((t) => ({ text: t, isNew: addedText.includes(t.slice(0, 30)) })) }
 }
@@ -259,6 +316,31 @@ if (!skipped.section) {
   for (const it of skipped.items) L.push(`  ${it.isNew ? '🆕' : '  '} [ ] ${it.text}`)
 }
 L.push('─'.repeat(63))
+// NAME THE SOURCE. The reading is only as good as the transcript it came from, and the
+// failure mode is silent: pointing at the wrong file yields a confident, wrong table.
+// `agentSource` already reports session-vs-workflow; this adds which FILE and how stale.
+const ageStr = sessionAgeMin < 1 ? 'just now' : sessionAgeMin < 60
+  ? `${Math.round(sessionAgeMin)}m ago`
+  : `${(sessionAgeMin / 60).toFixed(1)}h ago`
+L.push(
+  `  source: ${path.basename(sessionFile)} (last written ${ageStr})` +
+    (SINCE !== null
+      ? ` · scoped to entries since ${SINCE_RAW} (${skippedBefore} earlier entries excluded)`
+      : ' · WHOLE SESSION — pass --since <run start ISO> to scope to one run')
+)
+// Only warn on zero agents AFTER the Workflow fallback has had its turn — a ship run
+// legitimately finds none in the session transcript.
+if (sessionAgeMin > 10 || agents.length === 0) {
+  L.push('')
+  L.push('  ⚠️  THIS READING IS PROBABLY WRONG — it may be measuring a different session.')
+  if (agents.length === 0) L.push('      No subagents found in the session transcript OR a workflow run dir;')
+  if (agents.length === 0) L.push('      a forge run always spawns at least one.')
+  if (sessionAgeMin > 10) L.push(`      The transcript was last written ${ageStr}, not during this run.`)
+  L.push(`      Looked in: ${projectDir(CWD)}`)
+  L.push('      If CLAUDE_CONFIG_DIR is set, transcripts live under it, not ~/.claude.')
+  L.push('      Re-run with --session <path-to-this-session.jsonl>, and do NOT report the')
+  L.push('      numbers above as measured until it agrees.')
+}
 L.push('~ Best-effort measurement from the session transcript — approximate, informational')
 L.push('  only, not for billing. Your provider\'s usage records are authoritative. No warranty.')
 console.log(L.join('\n'))
