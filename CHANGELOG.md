@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.3
+
+- **Fix: bundle `database-reviewer`.** The DB/API/auth lens previously fell back to a
+  general-purpose agent on fresh installs: `workflows/forge-auto.js` and
+  `commands/build.md` (PHASE B) both named `database-reviewer`, but `agents/` never
+  shipped it. Added a test (`tests/agents-bundled.test.mjs`, `npm test`) that every
+  reviewer the arc names is bundled, that every agent honours the verdict contract,
+  and that the README's bundled-agents list matches `agents/`.
+
 ## 0.4.2
 
 Three defects surfaced by the 2026-08-03 branch-C ship run. All three are

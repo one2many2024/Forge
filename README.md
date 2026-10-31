@@ -13,7 +13,7 @@ review battery → full quality gate → do-NOT-merge PR → gap-audit → run-s
   a deterministic **Workflow engine**; runs start-to-finish, opens the PR, and reports back.
 
 It's the difference between "write me a feature" and "plan it, build it test-first, review it
-from six angles, gate it, open a do-NOT-merge PR, and tell me what's still open and what it cost."
+from every relevant angle, gate it, open a do-NOT-merge PR, and tell me what's still open and what it cost."
 
 > **Command names:** Claude Code namespaces every plugin command by its plugin, so the commands
 > are `/forge:build`, `/forge:ship`, and `/forge:help` (just as babysitter's is
@@ -51,8 +51,8 @@ builds. Use **ship** when it's well-scoped and you want to walk away and review 
 - **Test-driven**: author from the contract, confirm RED, implement to GREEN.
 - **Token-conscious parallel pre-commit review battery** — scoped to the changed-file set via
   `scripts/forge-scope.sh`. Always runs `code-reviewer`, `security-reviewer`, `typescript-reviewer`,
-  `silent-failure-hunter`, `refactor-cleaner`; adds `performance-optimizer` + DB/RLS/API-security
-  lenses only when the touched files warrant it. Every CRITICAL/HIGH/MEDIUM is resolved; false
+  `silent-failure-hunter`, `refactor-cleaner`; adds `performance-optimizer` + `database-reviewer` (DB / RLS / API-security)
+  only when the touched files warrant it. Every CRITICAL/HIGH/MEDIUM is resolved; false
   positives are refuted with evidence.
 - **build** pauses at the design-gate and final sign-off (never auto-approved); **ship** does not.
 - **Full gate** (fix failures — including pre-existing — before proceeding): unit → build → lint →
@@ -116,9 +116,9 @@ Autonomy removes *pauses*, not *safeguards*. `/forge:ship`:
 
 ## Bundled review agents
 
-Forge ships its six review agents so the battery works on a fresh install: `code-reviewer`,
+Forge ships its seven review agents so the battery works on a fresh install: `code-reviewer`,
 `security-reviewer`, `typescript-reviewer`, `performance-optimizer`, `refactor-cleaner`,
-`silent-failure-hunter`. Each returns a `{ satisfied, findings[], summary }` verdict the arc
+`silent-failure-hunter`, `database-reviewer`. Each returns a `{ satisfied, findings[], summary }` verdict the arc
 consumes. If you already have your own agent with one of these names, yours takes precedence; if a
 named agent is missing, the arc falls back to a general-purpose agent with the same review lens —
 it never skips a review.
