@@ -37,6 +37,13 @@ if (typeof _args === 'string') { try { _args = JSON.parse(_args) } catch (e) { _
 if (!_args || typeof _args !== 'object') _args = {}
 const task = _args.task ? String(_args.task) : null
 const baseBranch = _args.baseBranch ? String(_args.baseBranch) : 'main'
+// Cross-model lens mode. The Workflow runtime cannot read environment variables, so
+// /forge:ship passes the user's FORGE_CODEX value in as args.codex. The runner script also
+// re-reads FORGE_CODEX itself, so "off" is enforced on both sides.
+const CODEX_MODES = ['auto', 'cli', 'api', 'off']
+const codexMode = CODEX_MODES.includes(String(_args.codex || '').trim().toLowerCase())
+  ? String(_args.codex).trim().toLowerCase()
+  : 'auto'
 
 // --- guarded agent wrapper: enforces MAX_AGENTS + MAX_BUDGET before spawning --
 let agentCount = 0
@@ -98,6 +105,54 @@ const FINDINGS_SCHEMA = {
     },
   },
 }
+// The cross-model lens returns the normal findings PLUS its own status, so a skipped lens is
+// reported as skipped. FINDINGS_SCHEMA for every other reviewer is unchanged.
+const CODEX_SCHEMA = {
+  type: 'object',
+  required: ['findings', 'codexStatus', 'codexBackend', 'codexReason'],
+  properties: {
+    findings: FINDINGS_SCHEMA.properties.findings,
+    codexStatus: { type: 'string', enum: ['ok', 'unavailable', 'error', 'timeout', 'disabled'] },
+    codexBackend: { type: 'string', enum: ['cli', 'api', 'none'] },
+    codexReason: { type: 'string' },
+  },
+}
+const PLAN_CHALLENGE_SCHEMA = {
+  type: 'object',
+  required: ['codexStatus', 'codexBackend', 'codexReason', 'objections'],
+  properties: {
+    codexStatus: { type: 'string', enum: ['ok', 'unavailable', 'error', 'timeout', 'disabled'] },
+    codexBackend: { type: 'string', enum: ['cli', 'api', 'none'] },
+    codexReason: { type: 'string' },
+    objections: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['severity', 'summary'],
+        properties: { severity: { type: 'string', enum: ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'] }, summary: { type: 'string' } },
+      },
+    },
+  },
+}
+const CODEX_RUNNER =
+  'node scripts/forge-codex-review.mjs (copy scripts/forge-codex-review.mjs and BOTH ' +
+  'scripts/forge-codex-review.schema.*.json from this plugin into the repo\'s scripts/ first if absent)'
+
+// <select-reviewers> — a pure function; tests/reviewer-selection.test.mjs extracts and runs it.
+// Trivial ⇒ a minimal lens set; else the full battery gated by flags, plus the optional
+// cross-model lens unless FORGE_CODEX=off.
+function selectReviewers(trivial, flags, codexMode) {
+  if (trivial) return ['code-reviewer', 'security-reviewer']
+  return [
+    'code-reviewer', 'security-reviewer', 'typescript-reviewer',
+    'silent-failure-hunter', 'refactor-cleaner',
+  ]
+    .concat(flags.TOUCHES_PERF ? ['performance-optimizer'] : [])
+    .concat((flags.TOUCHES_DB || flags.TOUCHES_API || flags.TOUCHES_AUTH) ? ['database-reviewer'] : [])
+    .concat(codexMode !== 'off' ? ['codex-reviewer'] : [])
+}
+// </select-reviewers>
+
 const VERDICT_SCHEMA = { type: 'object', required: ['real', 'reason'], properties: { real: { type: 'boolean' }, reason: { type: 'string' } } }
 // `branch` is required so a gate result carries the branch it MEASURED. Agents
 // share one working tree; a checkout by any one of them can move the tree under
@@ -124,13 +179,39 @@ async function run() {
   )
   if (aborted) return finish(null, { green: false, summary: 'aborted before implement' }, [], 0, plan)
 
+  // -- Plan challenge: one adversarial cross-model pass over the plan (fail-open) --
+  const codexLens = { status: codexMode === 'off' ? 'disabled' : 'not run', backend: 'none', reason: codexMode === 'off' ? 'FORGE_CODEX=off' : '', rawFindings: 0, confirmed: 0, planObjections: 0 }
+  let objectionsBlock = ''
+  if (codexMode !== 'off' && !aborted) {
+    const pc = await A(
+      `Cross-model PLAN CHALLENGE (forwarder only — form no opinion of your own). Write the plan ` +
+      `below verbatim to a temp file, then run ${CODEX_RUNNER} with ` +
+      `\`--mode plan --plan-file <that file>\`. It prints ONE JSON envelope and always exits 0. ` +
+      `Return its status as codexStatus, its backend as codexBackend ("none" if null), its reason ` +
+      `as codexReason ("" if null) and its objections VERBATIM. Never print env vars or keys.\n\nPLAN:\n${plan}`,
+      { phase: 'Plan', label: 'plan-challenge:codex', schema: PLAN_CHALLENGE_SCHEMA },
+    )
+    if (pc) {
+      codexLens.reason = pc.codexReason || ''
+      const objs = Array.isArray(pc.objections) ? pc.objections : []
+      codexLens.planObjections = objs.length
+      log(`cross-model plan challenge: ${pc.codexStatus} via ${pc.codexBackend} (${pc.codexReason || 'no reason'}) — ${objs.length} objection(s)`)
+      if (pc.codexStatus === 'ok' && objs.length) {
+        objectionsBlock =
+          `\n\nCROSS-MODEL OBJECTIONS (${pc.codexBackend}) — address each in the implementation or ` +
+          `explicitly reject it with a one-line reason in the PR body:\n` +
+          objs.map((o) => `- ${o.severity}: ${o.summary}`).join('\n')
+      }
+    }
+  }
+
   // -- Implement (TDD-first UNLESS the change is trivial) --------------------
   phase('Implement')
   await A(
     `Implement the task on a new branch off ${baseBranch}. TDD-first (author tests from the ` +
     `contract, confirm RED, implement to GREEN) UNLESS the change is trivial (comment/doc/config ` +
     `only) — then no tests. Read before write; scope edits to the live path. Write any migration ` +
-    `additively (IF NOT EXISTS) but DO NOT apply it to prod. Plan:\n\n${plan}`,
+    `additively (IF NOT EXISTS) but DO NOT apply it to prod. Plan:\n\n${plan}${objectionsBlock}`,
     { phase: 'Implement', label: 'implement' },
   )
 
@@ -162,15 +243,10 @@ async function run() {
     : ''
   if (!branch) log('WARNING: scope did not report a branch — the branch guard is INACTIVE for this run')
 
-  // Reviewers: trivial ⇒ a minimal lens set; else the full battery gated by flags.
-  const activeReviewers = trivial
-    ? ['code-reviewer', 'security-reviewer']
-    : [
-        'code-reviewer', 'security-reviewer', 'typescript-reviewer',
-        'silent-failure-hunter', 'refactor-cleaner',
-      ]
-        .concat(flags.TOUCHES_PERF ? ['performance-optimizer'] : [])
-        .concat((flags.TOUCHES_DB || flags.TOUCHES_API || flags.TOUCHES_AUTH) ? ['database-reviewer'] : [])
+  const activeReviewers = selectReviewers(trivial, flags, codexMode)
+  if (codexMode !== 'off' && !activeReviewers.includes('codex-reviewer')) {
+    codexLens.reason = 'trivial diff — cross-model review lens not selected'
+  }
 
   // -- Review (barrier per round) → dedup+cap → severity-tiered verify -------
   phase('Review')
@@ -180,14 +256,38 @@ async function run() {
   while (round < MAX_FINDER_ROUNDS && !aborted) {
     round += 1
 
-    const roundFindings = (await parallel(activeReviewers.map((r) => () =>
-      A(
+    // The cross-model lens runs in round 1 only: later rounds re-review the same diff, and each
+    // call is billed to the user's OpenAI/ChatGPT account and can take minutes.
+    const roundReviewers = round === 1 ? activeReviewers : activeReviewers.filter((r) => r !== 'codex-reviewer')
+    const roundFindings = (await parallel(roundReviewers.map((r) => () => {
+      if (r === 'codex-reviewer') {
+        return A(
+          `${onBranch}codex-reviewer (cross-model FORWARDER — form no opinion of your own). Write these ` +
+          `changed files, one per line, to a temp file:\n${scopeLine}\n\nThen run ${CODEX_RUNNER} with ` +
+          `\`--mode review --base ${baseBranch} --files-from <that file>\`. It prints ONE JSON envelope ` +
+          `and always exits 0. Return its findings VERBATIM (severity, file, line, summary — no ` +
+          `adding, editing, re-ranking or dropping), its status as codexStatus, its backend as ` +
+          `codexBackend ("none" if null) and its reason as codexReason ("" if null). On any non-ok ` +
+          `status return an EMPTY findings array. Never print env vars or keys.`,
+          { phase: 'Review', label: 'review:codex-reviewer', schema: CODEX_SCHEMA },
+        ).then((x) => {
+          if (!x) return []
+          codexLens.status = x.codexStatus
+          codexLens.backend = x.codexBackend
+          codexLens.reason = x.codexReason || codexLens.reason
+          const got = (x.codexStatus === 'ok' && Array.isArray(x.findings)) ? x.findings : []
+          codexLens.rawFindings = got.length
+          log(`cross-model: ${x.codexStatus} via ${x.codexBackend} (${x.codexReason || 'no reason'}) — ${got.length} raw finding(s)`)
+          return got.map((f) => ({ ...f, source: 'codex' }))
+        })
+      }
+      return A(
         `${onBranch}${r}: review ONLY these changed files (never audit the repo):\n${scopeLine}\n\nRound ` +
         `${round}. Return compact findings — severity · file:line · one-line. If the change is ` +
         `genuinely fine, return an EMPTY findings array; do not invent issues.`,
         { phase: 'Review', label: `review:${r}`, schema: FINDINGS_SCHEMA },
-      ).then((x) => (x && x.findings) ? x.findings : []),
-    ))).filter(Boolean).flat()
+      ).then((x) => (x && x.findings) ? x.findings : [])
+    }))).filter(Boolean).flat()
 
     // Dedup vs everything seen, then cap to the top-N by severity (kills the N×votes blow-up).
     const fresh = roundFindings.filter((f) => f && !seen.has(keyOf(f)))
@@ -214,7 +314,8 @@ async function run() {
 
     const added = verified.filter((f) => f && f.real)
     confirmed.push(...added)
-    log(`round ${round}: reviewed ${activeReviewers.length}, ${fresh.length} fresh, +${added.length} confirmed; agents=${agentCount} spent=${Math.round(budget.spent() / 1000)}k`)
+    codexLens.confirmed += added.filter((f) => f.source === 'codex').length
+    log(`round ${round}: reviewed ${roundReviewers.length}, ${fresh.length} fresh, +${added.length} confirmed; agents=${agentCount} spent=${Math.round(budget.spent() / 1000)}k`)
     if (added.length === 0) break // dry round — stop
   }
 
@@ -285,7 +386,11 @@ async function run() {
         `it green.`) +
     ` Substantive body (inventory, decisions, gate results). If a migration exists, post the ` +
     `Supabase Migration Required comment and note it was NOT applied to prod (human-gated); else ` +
-    `post "No Supabase action needed for this branch." Return the PR URL as text.`,
+    `post "No Supabase action needed for this branch." ` +
+    (codexMode === 'off' ? '' :
+      `Include a "Cross-model review" section: ${codexLensLine(codexLens)}; list each plan ` +
+      `objection and how it was handled (addressed, or rejected with a one-line reason). `) +
+    `Return the PR URL as text.`,
     { phase: 'Ship', label: 'ship' },
   )
 
@@ -294,14 +399,22 @@ async function run() {
   const gapAudit = await A(
     `Audit the original task item-by-item: ✅ done & verified / ⚠️ consciously omitted (reason) / ` +
     `⛔ open / 🧹 housekeeping. Only claim what passed its gate.\n\nTASK:\n${task}\nFIXED: ` +
-    `${mustFix.length}  GATE GREEN: ${gateGreen}  PR: ${ship}`,
+    `${mustFix.length}  GATE GREEN: ${gateGreen}  PR: ${ship}` +
+    (codexMode === 'off' ? '' :
+      `\nCROSS-MODEL LENS: ${codexLensLine(codexLens)}. List it as ✅ ran (via cli|api) ONLY if ` +
+      `status is ok; otherwise ⚠️ skipped (reason) — never ✅ for a skipped lens.`),
     { phase: 'Gap-audit', label: 'gap-audit' },
   )
 
-  return finish(ship, { green: gateGreen, summary: `fast=${fast.summary}; slow=${slow.summary}` }, confirmed, round, gapAudit)
+  return finish(ship, { green: gateGreen, summary: `fast=${fast.summary}; slow=${slow.summary}` }, confirmed, round, gapAudit, codexLens)
 }
 
-function finish(prUrl, gate, confirmed, rounds, gapAudit) {
+function codexLensLine(c) {
+  return `status=${c.status} backend=${c.backend}${c.reason ? ` reason="${c.reason}"` : ''} ` +
+    `raw findings=${c.rawFindings} confirmed=${c.confirmed} plan objections=${c.planObjections}`
+}
+
+function finish(prUrl, gate, confirmed, rounds, gapAudit, codexLens) {
   return {
     prUrl: prUrl || null,
     gateGreen: !!(gate && gate.green),
@@ -313,6 +426,7 @@ function finish(prUrl, gate, confirmed, rounds, gapAudit) {
     aborted,
     cappedReason: aborted ? (agentCount >= MAX_AGENTS ? `MAX_AGENTS (${MAX_AGENTS})` : `MAX_BUDGET (${MAX_BUDGET})`) : null,
     gapAudit: gapAudit || null,
+    codexLens: codexLens || { status: codexMode === 'off' ? 'disabled' : 'not run', backend: 'none', reason: codexMode === 'off' ? 'FORGE_CODEX=off' : '', rawFindings: 0, confirmed: 0, planObjections: 0 },
   }
 }
 

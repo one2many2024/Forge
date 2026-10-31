@@ -85,9 +85,17 @@ Invoke the **babysitter:babysit** skill (Skill tool) in plan-only mode for this 
    through `scripts/gate-summary.sh`** (pass / failing-excerpt only); a final sign-off
    breakpoint; commit/push/PR-never-merge + migration comment. Copy the helper scripts from
    this plugin into the repo's `scripts/` on first use so the arc calls committed, portable
-   copies — `forge-scope.sh` + `gate-summary.sh` for the process's own tasks, and
-   `forge-summary.mjs` for the closing run-summary (Phase D).
-5. **Present** the plan at a high level with the reuse-audit block, then use **AskUserQuestion**
+   copies — `forge-scope.sh` + `gate-summary.sh` for the process's own tasks,
+   `forge-codex-review.mjs` + its two `forge-codex-review.schema.*.json` files for the optional
+   cross-model lens, and `forge-summary.mjs` for the closing run-summary (Phase D).
+5. **Cross-model plan challenge (optional, fail-open).** Unless `FORGE_CODEX=off`, write the plan
+   to a temp file and run `node scripts/forge-codex-review.mjs --mode plan --plan-file <file>`. It
+   picks the backend itself (Codex CLI if installed and logged in, else the OpenAI API if
+   `OPENAI_API_KEY` is set), always exits 0 and prints one JSON envelope. With `status: "ok"`,
+   show a **"Cross-model objections (<backend>)"** block next to the reuse-audit block, one line
+   per objection with its severity, and fold any you accept into the plan. Otherwise show one
+   line: `Cross-model plan challenge skipped: <reason>`. Never let it block or auto-approve.
+6. **Present** the plan at a high level with the reuse-audit and cross-model blocks, then use **AskUserQuestion**
    for any genuine decisions (design choices, scope, the daily-cap/threshold-style constants).
    **Then PAUSE and ask the user to approve the plan before executing.** Do not create the run.
 
@@ -117,7 +125,11 @@ completion proof, applying the arc at every phase:
   - **Conditional, gated on the `forge-scope.sh` flags** (skip when the flag is 0, to avoid
     burning tokens on an irrelevant lens): `performance-optimizer` when `TOUCHES_PERF=1`; and
     `database-reviewer` + the RLS / API-security audit checklists when `TOUCHES_DB=1`,
-    `TOUCHES_API=1`, or `TOUCHES_AUTH=1`.
+    `TOUCHES_API=1`, or `TOUCHES_AUTH=1`; and the cross-model lens `codex-reviewer` when the diff
+    is non-trivial and `FORGE_CODEX` is not `off`. It is optional and fail-open: a non-ok status
+    means empty findings plus its reason, never a blocked run and never a pass. Its findings are
+    adversarially verified by Claude skeptics like everyone else's; it gets no bypass. Run it
+    once per review, not once per finder round.
   Resolve **every CRITICAL / HIGH / MEDIUM** (fix it, or justify in a code comment) before
   committing. **Adversarially verify** findings and refute false positives with evidence
   (cite file:line) rather than "fixing" non-bugs. If a named reviewer agent isn't installed,
@@ -158,6 +170,8 @@ list** and go through it item by item. Report back to the user, honestly labelin
   separate step; the RALPH spec-lock suite ran inside `npm test` and a static change touches no
   AI-router surface").
 - ⛔ **Genuinely open** — anything blocked (in `SKIPPED.md`) or owner-action (billing toggles).
+- **Cross-model lens** — ✅ ran via `cli`/`api` (raw → confirmed findings, plan objections and
+  how each was handled), or ⚠️ skipped (reason). Never ✅ for a skipped or disabled lens.
 - 🧹 **Housekeeping** — branch state, untracked run/process artifacts, running dev servers,
   local stacks — and offer to clean them up.
 

@@ -15,15 +15,16 @@ const bundled = readdirSync(join(ROOT, 'agents'))
   .map((f) => f.slice(0, -3))
   .sort()
 
-// Names inside the `const activeReviewers = ...` statement (both ternary arms and
-// every .concat([...]) branch). The statement ends at the first blank line.
+// Names inside the selectReviewers() block of forge-auto.js (between its
+// `// <select-reviewers>` markers): the trivial set, the always-on list and every
+// .concat([...]) branch. Only agent-shaped literals count, so mode strings such as
+// 'off' are not mistaken for agent names.
 function reviewersFromWorkflow() {
   const src = read('workflows/forge-auto.js')
-  const start = src.indexOf('const activeReviewers')
-  assert.notEqual(start, -1, 'forge-auto.js: `const activeReviewers` not found — parser is stale')
-  const end = src.indexOf('\n\n', start)
-  const stmt = src.slice(start, end === -1 ? undefined : end)
-  return [...new Set([...stmt.matchAll(/'([a-z][a-z-]*)'/g)].map((m) => m[1]))]
+  const m = src.match(/\/\/ <select-reviewers>([\s\S]*?)\/\/ <\/select-reviewers>/)
+  assert.ok(m, 'forge-auto.js: `// <select-reviewers>` block not found — parser is stale')
+  const names = [...m[1].matchAll(/'([a-z]+(?:-[a-z]+)*-(?:reviewer|hunter|cleaner|optimizer))'/g)].map((x) => x[1])
+  return [...new Set(names)]
 }
 
 // Section = from the heading containing `PHASE B` to the next heading of equal or

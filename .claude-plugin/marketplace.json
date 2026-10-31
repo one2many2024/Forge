@@ -1,7 +1,7 @@
 {
   "name": "forge",
   "metadata": {
-    "description": "Forge — the /forge two-step orchestration arc for Claude Code (babysitter PLAN then EXECUTE + gap-audit), with seven bundled review agents."
+    "description": "Forge — the /forge two-step orchestration arc for Claude Code (babysitter PLAN then EXECUTE + gap-audit), with seven bundled review agents and an optional cross-model (Codex CLI / OpenAI API) review lens."
   },
   "owner": {
     "name": "Eli Gur",
@@ -11,7 +11,7 @@
     {
       "name": "forge",
       "source": "./",
-      "description": "The /forge two-step orchestration arc: babysitter PLAN then EXECUTE, then an 'anything left out?' gap-audit. Bundles seven review agents."
+      "description": "The /forge two-step orchestration arc: babysitter PLAN then EXECUTE, then an 'anything left out?' gap-audit. Bundles seven review agents, plus an optional cross-model review lens."
     }
   ]
 }

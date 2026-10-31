@@ -23,20 +23,28 @@ If the task portion is empty, ask the user for the task prompt and stop.
 
 - **Opt-in authorized.** This command's instructions explicitly authorize the `Workflow` tool.
   Invoke the `Workflow` tool with `{ scriptPath: "<this plugin>/workflows/forge-auto.js",
-  args: { task: "<the task prompt>", baseBranch: "main" } }`. Parse a trailing `+<budget>`
+  args: { task: "<the task prompt>", baseBranch: "main", codex: "<FORGE_CODEX, default auto>" } }`.
+  The Workflow cannot read environment variables, so read `FORGE_CODEX` in the main loop and pass
+  it in (`auto` if unset). Parse a trailing `+<budget>`
   (e.g. `+800k`) off the arguments and surface it to the user as the turn's token target; the
   Workflow reads it via its `budget` global. If no `+budget` is given, ship runs at **baseline
   depth** (see the engine's defaults) — it still completes the full arc.
 - **Runs unattended to a PR.** The Workflow performs: reuse-audit → plan → TDD tests →
   implement → scope → parallel review battery → adversarial verify → resolve → full gate →
   commit → push → **do-NOT-merge PR** → gap-audit, then returns a structured report.
+- **Optional cross-model lens** (see `/forge:help`). Unless `FORGE_CODEX=off`, an OpenAI model
+  challenges the plan once, and `codex-reviewer` joins the review battery for non-trivial diffs.
+  It uses the Codex CLI if installed and logged in, else the OpenAI API if `OPENAI_API_KEY` is set,
+  else it is skipped with a reason. It is fail-open, and its findings are verified by Claude
+  skeptics like every other finding. The workflow result's `codexLens` reports status, backend,
+  raw → confirmed findings and plan objections.
 - **After it returns**, surface to the user: the **PR link**, the **gap-audit** table
   (done / consciously-omitted / open / housekeeping), the **gate status**, and whether it
   **hit the 750k cap**. Then print the **closing run-summary** by running the shipped meter
   from this plugin's `scripts/` (the Workflow can't do fs; the main loop runs it), passing the
   workflow's reported `budget.spent()` target for the verdict:
   ```
-  node "<this plugin>/scripts/forge-summary.mjs" --base main --budget <the +budget, if any>
+  node "<this plugin>/scripts/forge-summary.mjs" --base main --budget <the +budget, if any> --codex-lens '<the workflow result's codexLens as JSON>'
   ```
   Print its output **verbatim** — the per-phase/per-step token table (from the session
   transcript's per-agent `subagent_tokens` + main-loop `usage`), the rule-based
