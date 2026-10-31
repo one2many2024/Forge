@@ -116,9 +116,10 @@ Autonomy removes *pauses*, not *safeguards*. `/forge:ship`:
 
 ## Bundled review agents
 
-Forge ships its seven review agents so the battery works on a fresh install: `code-reviewer`,
+Forge ships its seven Claude review agents so the battery works on a fresh install: `code-reviewer`,
 `security-reviewer`, `typescript-reviewer`, `performance-optimizer`, `refactor-cleaner`,
-`silent-failure-hunter`, `database-reviewer`. Each returns a `{ satisfied, findings[], summary }` verdict the arc
+`silent-failure-hunter`, `database-reviewer` — plus `codex-reviewer`, the forwarder for the optional
+cross-model lens (see below). Each returns a `{ satisfied, findings[], summary }` verdict the arc
 consumes. If you already have your own agent with one of these names, yours takes precedence; if a
 named agent is missing, the arc falls back to a general-purpose agent with the same review lens —
 it never skips a review.
