@@ -52,8 +52,9 @@ builds. Use **ship** when it's well-scoped and you want to walk away and review 
 - **Token-conscious parallel pre-commit review battery** — scoped to the changed-file set via
   `scripts/forge-scope.sh`. Always runs `code-reviewer`, `security-reviewer`, `typescript-reviewer`,
   `silent-failure-hunter`, `refactor-cleaner`; adds `performance-optimizer` + `database-reviewer` (DB / RLS / API-security)
-  only when the touched files warrant it. Every CRITICAL/HIGH/MEDIUM is resolved; false
-  positives are refuted with evidence.
+  only when the touched files warrant it, plus the optional **cross-model lens** (`codex-reviewer`)
+  on non-trivial diffs. That makes seven Claude reviewers plus an optional OpenAI second opinion.
+  Every CRITICAL/HIGH/MEDIUM is resolved; false positives are refuted with evidence.
 - **build** pauses at the design-gate and final sign-off (never auto-approved); **ship** does not.
 - **Full gate** (fix failures — including pre-existing — before proceeding): unit → build → lint →
   typecheck → E2E → any DB/security checks → spec-lock suites, each summarised to pass /
@@ -124,6 +125,40 @@ consumes. If you already have your own agent with one of these names, yours take
 named agent is missing, the arc falls back to a general-purpose agent with the same review lens —
 it never skips a review.
 
+## Cross-model review (optional)
+
+Every bundled reviewer and every adversarial skeptic is Claude, so one model family would otherwise
+grade its own work. The optional cross-model lens adds a second opinion from an OpenAI model:
+
+- **Plan challenge:** after PLAN, the model attacks the plan once (up to 8 objections). `build` shows
+  them at plan approval. `ship` hands them to the implementer, who must address or explicitly
+  reject each one in the PR body.
+- **Review lens:** `codex-reviewer` joins the battery for non-trivial diffs. Its findings go through
+  the same dedup, cap and **Claude skeptic verification** as every other finding, with no bypass.
+  It runs once per review.
+
+| `FORGE_CODEX` | Behaviour |
+|---|---|
+| `auto` (default) | Codex CLI if installed and logged in → else the OpenAI API if `OPENAI_API_KEY` is set → else skipped |
+| `cli` | Codex CLI only: Forge never touches an API key |
+| `api` | OpenAI API only, even if Codex is installed (`FORGE_OPENAI_MODEL`, default `gpt-6.1-terra`) |
+| `off` | disabled; the arc behaves exactly as without the lens |
+
+- **Fallback:** happens only when the CLI *can't* run (not installed or not logged in). A CLI that
+  runs and then times out or errors is reported as such, not retried via the API. Every run states
+  which backend it used.
+- **Two backends, different strengths:** the CLI runs read-only inside your repo and can open
+  surrounding code. The API sees the diff plus the full changed files. Your key is read from the
+  environment, sent only to OpenAI, never logged, and redacted from all output.
+- **Fail-open:** missing, logged out, slow or garbled means the run continues, and the lens is
+  reported as ⚠️ skipped with its reason, never as passed.
+- **Cost and prerequisites:** usage is billed to **your own OpenAI/ChatGPT account**, not Claude, and
+  isn't counted in Forge's token meter. You need either the Codex CLI, logged in with a ChatGPT plan
+  (Free included) or an API key, or an `OPENAI_API_KEY` from an account with API billing.
+
+Inspired by OpenAI's [codex-plugin-cc](https://github.com/openai/codex-plugin-cc) (Apache-2.0);
+Forge calls the Codex CLI or the OpenAI API directly and does not bundle the plugin.
+
 ## Helper scripts
 
 Portable, dependency-free scripts the arc copies into the target repo's `scripts/` (build) or runs
@@ -133,6 +168,8 @@ from the plugin (ship):
   the review battery and gate its conditional lenses.
 - **`gate-summary.sh`** — runs a gate and emits only `PASS` or the exit code + failing lines, so
   green logs never flood context.
+- **`forge-codex-review.mjs`** (+ two `forge-codex-review.schema.*.json`) — the cross-model runner:
+  picks the backend, calls the model, normalises the output into one fail-open JSON envelope.
 - **`forge-summary.mjs`** — the Phase D run-summary / token meter (Node; reads the session transcript).
 
 ---

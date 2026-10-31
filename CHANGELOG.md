@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.5.0
+
+- **New: optional cross-model review lens.** An OpenAI model now gives a second opinion
+  next to the seven Claude reviewers.
+  - **Plan challenge:** one adversarial pass over the plan, shown at approval in `build`
+    and handed to the implementer in `ship`.
+  - **Review lens:** `codex-reviewer` joins the battery for non-trivial diffs. Its findings
+    go through the same Claude skeptic verification as every other finding.
+- **Backend setting:** `FORGE_CODEX=auto|cli|api|off`. `auto` uses the Codex CLI if it is
+  installed and logged in, else the OpenAI API if `OPENAI_API_KEY` is set, else skips. It
+  falls back only when the CLI can't run, never after a CLI error. Every run names its
+  backend.
+- **Fail-open:** the lens never blocks a run and is never reported as passed when skipped.
+  Usage bills the user's own OpenAI/ChatGPT account, and the run summary marks it as
+  external.
+- **Tests:** `selectReviewers()` is now a pure function. With `FORGE_CODEX=off`, the
+  engine's prompts and result are identical to 0.4.3 apart from the new `codexLens` field.
+  The bundled-agents test now reads reviewer names from `selectReviewers()`.
+- **New files:** `scripts/forge-codex-review.mjs` with its two schemas, and
+  `agents/codex-reviewer.md`. 53 tests in all.
+
 ## 0.4.3
 
 - **Fix: bundle `database-reviewer`.** The DB/API/auth lens previously fell back to a
