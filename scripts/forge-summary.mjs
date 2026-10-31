@@ -21,6 +21,9 @@
 //              per-run figure.
 //   --budget   ship's token target (budget.total), for the verdict's spent/budget check
 //   --cwd      repo root (default: process.cwd()) — used to derive the transcript dir + git
+//   --codex-lens  the ship workflow result's `codexLens` as JSON. Without it, the cross-model
+//              line falls back to the envelopes forge-codex-review.mjs persists in
+//              <git-dir>/forge/, and otherwise says "not recorded". It never guesses.
 //
 // Output tokens are the headline (matches the statusline `↓ tokens` + Workflow budget.spent()).
 
@@ -278,6 +281,46 @@ function skippedOpenItems() {
 }
 const skipped = skippedOpenItems()
 
+// ── cross-model lens (optional; usage is external, never metered here) ─────────
+// Source order: --codex-lens (ship's workflow result; has the confirmed count) → the envelopes
+// the runner persisted in <git-dir>/forge/ (raw counts only) → "not recorded". Never guesses.
+function crossModelLine() {
+  const describe = (status, backend, reason) =>
+    `${status}${backend && backend !== 'none' ? ` via ${backend}` : ''}${reason ? ` (${String(reason).slice(0, 120)})` : ''}`
+  const external = 'external — not metered (billed to the user\'s OpenAI/ChatGPT account)'
+  const raw = arg('--codex-lens', null)
+  if (raw) {
+    try {
+      const c = JSON.parse(raw)
+      if (c.status === 'disabled') return `Cross-model: disabled${c.reason ? ` (${c.reason})` : ''}`
+      return `Cross-model: ${describe(c.status, c.backend, c.reason)} · findings ${c.rawFindings ?? 'n/a'} raw → ` +
+        `${c.confirmed ?? 'n/a'} confirmed · plan objections ${c.planObjections ?? 'n/a'} — ${external}`
+    } catch { /* fall through to the persisted envelopes */ }
+  }
+  const gd = git('rev-parse --git-dir')
+  if (gd) {
+    const dir = path.join(path.resolve(CWD, gd), 'forge')
+    const load = (m) => {
+      try {
+        const e = JSON.parse(fs.readFileSync(path.join(dir, `codex-${m}.json`), 'utf-8'))
+        if (SINCE !== null && e.writtenAt && Date.parse(e.writtenAt) < SINCE) return null // an earlier run's
+        return e
+      } catch { return null }
+    }
+    const rev = load('review')
+    const plan = load('plan')
+    if (rev || plan) {
+      const head = rev || plan
+      if (head.status === 'disabled') return `Cross-model: disabled${head.reason ? ` (${head.reason})` : ''}`
+      return `Cross-model: ${describe(head.status, head.backend, head.reason)} · findings ` +
+        `${rev ? (rev.findings || []).length : 'n/a'} raw → n/a confirmed · plan objections ` +
+        `${plan ? (plan.objections || []).length : 'n/a'} — ${external}`
+    }
+  }
+  return 'Cross-model: not recorded'
+}
+const crossModel = crossModelLine()
+
 // ── render ─────────────────────────────────────────────────────────────────────
 const dur = (orch.firstTs && orch.lastTs) ? Math.round((Date.parse(orch.lastTs) - Date.parse(orch.firstTs)) / 60000) : null
 const pad = (s, n) => String(s).padEnd(n)
@@ -305,6 +348,7 @@ L.push(`  measured: agents ~${fmt(agentTotal)} + orchestration ${fmt(orch.output
 L.push(`  agent source: ${agentSource}`)
 L.push('')
 L.push(`Verdict: ${verdict} — ${why}.`)
+L.push(crossModel)
 L.push('')
 if (!skipped.section) {
   L.push('Open items (SKIPPED.md): none parseable — add a `## Open items` section with `- [ ]`')
