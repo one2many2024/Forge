@@ -47,6 +47,24 @@ battery → gate → do-NOT-merge PR → gap-audit — in one command. It ships 
 | `/forge:ship "<task>" [+budget]` | autonomous | none | optional `+<budget>` |
 | `/forge:help` | — | — | — |
 
+## Optional: cross-model review (Codex CLI or OpenAI API)
+A second opinion from a different model family. It challenges the plan once, and `codex-reviewer`
+joins the review battery for non-trivial diffs. Its findings are verified by Claude skeptics like
+every other finding, and it is **fail-open**: if it can't run, the run continues and reports it as
+skipped (never as passed).
+
+| `FORGE_CODEX` | Behaviour |
+|---|---|
+| `auto` (default) | Codex CLI if installed and logged in → else OpenAI API if `OPENAI_API_KEY` is set → else skipped |
+| `cli` | Codex CLI only |
+| `api` | OpenAI API only (`FORGE_OPENAI_MODEL` picks the model) |
+| `off` | disabled |
+
+It falls back to the API only when the CLI can't run (not installed / not logged in), never after
+a CLI error or timeout, and every run says which backend it used. Prerequisites: the **Codex CLI**,
+logged in with a ChatGPT plan (Free included) or an API key, **or** an `OPENAI_API_KEY` from an
+OpenAI account with API billing. Usage bills **your own OpenAI/ChatGPT account**, not Claude.
+
 ## Prerequisite
 `build` needs the **babysitter** plugin (`claude plugin install --scope user
 babysitter@a5c.ai`, then restart). `ship` needs the `Workflow` tool available in the session.
