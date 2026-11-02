@@ -1,0 +1,17 @@
+{
+  "R1": { "type": "test", "file": "tests/forge-evidence.test.mjs", "name": "a requirement with no evidence entry is open and still listed; an agent-written status is ignored", "mocked": false },
+  "R2": { "type": "command", "run": ["node", "--test", "--test-reporter=tap", "--test-name-pattern=a passing named test is|an unknown runner is open|jest, vitest and playwright are invoked", "tests/forge-evidence.test.mjs"], "expectExit": 0, "expectStdout": "^# pass 3\\n# fail 0$" },
+  "R3": { "type": "test", "file": "tests/forge-evidence.test.mjs", "name": "command proofs: exit + stdout regex match ✅, mismatches ❌, run with shell: false and no pipes", "mocked": false },
+  "R4": { "type": "command", "run": ["node", "--test", "--test-reporter=tap", "--test-name-pattern=strength labels come from git history|mutation-verified needs a block", "tests/forge-evidence.test.mjs"], "expectExit": 0, "expectStdout": "^# pass 2\\n# fail 0$" },
+  "R5": { "type": "test", "file": "tests/forge-evidence.test.mjs", "name": "a local test-results/ artifact is open: not reachable; a URL or committed file is fine", "mocked": false },
+  "R6": { "type": "test", "file": "tests/forge-evidence.test.mjs", "name": "no CI on the PR head: the ⛔ line plus an Open item; CI that ran is summarised", "mocked": false },
+  "R7": { "type": "test", "file": "tests/forge-evidence.test.mjs", "name": "requirements.json edited after its first commit prints the drift warning", "mocked": false },
+  "R8": { "type": "command", "run": ["node", "--test", "--test-reporter=tap", "--test-name-pattern=PR template is preserved|own Testing section is filled", "tests/forge-evidence.test.mjs"], "expectExit": 0, "expectStdout": "^# pass 2\\n# fail 0$" },
+  "R9": { "type": "test", "file": "tests/forge-evidence.test.mjs", "name": "Windows CRLF inputs parse: requirements, evidence, template, mutation block and freeze", "mocked": false },
+  "R10": { "type": "test", "file": "tests/evidence-arc.test.mjs", "name": "parity guard: build.md, ship.md and forge-auto.js all reference forge-evidence.mjs", "mocked": false },
+  "R11": { "type": "test", "file": "tests/agents-bundled.test.mjs", "name": "README \"Helper scripts\" names every shipped helper in scripts/", "mocked": false },
+  "R12": { "type": "test", "file": "tests/forge-evidence.test.mjs", "name": "freeze: acceptance spec ids verbatim, plan additions tagged, no silent overwrite", "mocked": false },
+  "R13": { "type": "command", "run": ["node", "--test", "--test-reporter=tap", "--test-name-pattern=build.md freezes in PHASE A|engine: freeze before implement|engine: evidence measured on another branch|guardEvidence", "tests/evidence-arc.test.mjs"], "expectExit": 0, "expectStdout": "^# pass 4\\n# fail 0$" },
+  "R14": { "type": "test", "file": "tests/forge-summary-codex.test.mjs", "name": "Evidence: counts come from evidence.result.json, with its open flags", "mocked": false },
+  "R15": { "type": "manual", "reason": "documentation quality needs a human read: README 'Evidence-backed PRs', commands/help.md, CHANGELOG 0.6.0" }
+}
