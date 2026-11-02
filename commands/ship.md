@@ -29,9 +29,19 @@ If the task portion is empty, ask the user for the task prompt and stop.
   (e.g. `+800k`) off the arguments and surface it to the user as the turn's token target; the
   Workflow reads it via its `budget` global. If no `+budget` is given, ship runs at **baseline
   depth** (see the engine's defaults) — it still completes the full arc.
-- **Runs unattended to a PR.** The Workflow performs: reuse-audit → plan → TDD tests →
-  implement → scope → parallel review battery → adversarial verify → resolve → full gate →
-  commit → push → **do-NOT-merge PR** → gap-audit, then returns a structured report.
+- **Runs unattended to a PR.** The Workflow performs: reuse-audit → plan → **freeze
+  requirements** → TDD tests → implement → scope → parallel review battery → adversarial
+  verify → resolve → full gate → **evidence** → commit → push → **do-NOT-merge PR** →
+  gap-audit, then returns a structured report.
+- **Evidence-backed PR.** With no human present, the frozen requirements come from the repo's
+  acceptance spec or the task prompt only (`node scripts/forge-evidence.mjs freeze`, never
+  `--plan-file`, never `--force`); any `plan`-origin row is shown as *agent-added*. The
+  implementer records only *where* each proof is in `.a5c/forge/evidence.json`. After the gate,
+  `scripts/forge-evidence.mjs` (copied into the repo's `scripts/` on first use, like the other
+  helpers) re-runs every proof, computes the status and renders the Evidence section into the
+  repo's own PR template. The evidence task is **pinned to the working branch exactly like the
+  gate** (`--branch <branch>`; the result reports the branch it measured); a mismatch forces
+  every row to ⚠️ open. The gap-audit marks a requirement ✅ only if its evidence row is ✅.
 - **Optional cross-model lens** (see `/forge:help`). Unless `FORGE_CODEX=off`, an OpenAI model
   challenges the plan once, and `codex-reviewer` joins the review battery for non-trivial diffs.
   It uses the Codex CLI if installed and logged in, else the OpenAI API if `OPENAI_API_KEY` is set,
@@ -51,7 +61,8 @@ If the task portion is empty, ask the user for the task prompt and stop.
   🟢/🟡/🔴 verdict (cross-checked against the budget), and the `## Open items` from `SKIPPED.md`
   (🆕 on newly-added). Do NOT re-tally tokens by hand or restate it as prose. Record any
   genuinely-open / owner-action items under a `## Open items` heading with `- [ ]` checkboxes so
-  the meter can parse them.
+  the meter can parse them. The meter also prints one `Evidence: n✅ n❌ n⚠️ n⏭` line from
+  `.a5c/forge/evidence.result.json`; surface the workflow result's `evidence` next to it.
 
 ## Hard rails (non-negotiable in auto mode — autonomy removes PAUSES, not SAFEGUARDS)
 

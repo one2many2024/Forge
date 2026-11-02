@@ -91,3 +91,14 @@ test('README "Bundled review agents" lists exactly the files in agents/', () => 
   const listed = [...new Set([...body.matchAll(AGENT_NAME)].map((m) => m[1]))].sort()
   assert.deepEqual(listed, bundled)
 })
+
+// Every shipped helper in scripts/ (the .mjs and .sh files the arc copies into a repo) must be
+// named in the README's "Helper scripts" section, so a user can find what a run committed.
+test('README "Helper scripts" names every shipped helper in scripts/', () => {
+  const body = section(read('README.md'), (l) => /Helper scripts/.test(l))
+  assert.ok(body, 'README: no "Helper scripts" heading')
+  const helpers = readdirSync(join(ROOT, 'scripts')).filter((f) => /\.(mjs|sh)$/.test(f)).sort()
+  assert.ok(helpers.includes('forge-evidence.mjs'), 'forge-evidence.mjs is shipped')
+  const missing = helpers.filter((f) => !body.includes(`\`${f}\``))
+  assert.deepEqual(missing, [], `shipped but not listed in the README: ${missing.join(', ')}`)
+})

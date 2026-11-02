@@ -52,6 +52,11 @@ phases). If `babysitter:babysit` is not installed, tell the user to install it a
   run `code` / `security` / `typescript` reviewers (trouble can come from anywhere); (4) have
   each reviewer return **compact structured findings** (severity · file:line · one-line), not
   prose. Encode these as the process's own tasks, not as afterthoughts.
+- **Evidence-backed PR: the agent declares where proof is, the script computes status.**
+  Requirements are frozen at plan approval (`.a5c/forge/requirements.json`); agents only ever
+  record *where* each proof lives (`.a5c/forge/evidence.json`), and `scripts/forge-evidence.mjs`
+  re-runs every proof and computes ✅ / ❌ / ⚠️ / ⏭. Never type a status yourself, never edit a
+  test or `requirements.json` to change a result.
 - This command is user-global: if the repo lacks a given gate (Supabase checks, RALPH,
   tsconfig.ci), degrade gracefully — run what exists, note what doesn't.
 
@@ -87,7 +92,8 @@ Invoke the **babysitter:babysit** skill (Skill tool) in plan-only mode for this 
    this plugin into the repo's `scripts/` on first use so the arc calls committed, portable
    copies — `forge-scope.sh` + `gate-summary.sh` for the process's own tasks,
    `forge-codex-review.mjs` + its two `forge-codex-review.schema.*.json` files for the optional
-   cross-model lens, and `forge-summary.mjs` for the closing run-summary (Phase D).
+   cross-model lens, `forge-evidence.mjs` for the frozen requirements and the PR's Evidence
+   section, and `forge-summary.mjs` for the closing run-summary (Phase D).
 5. **Cross-model plan challenge (optional, fail-open).** Unless `FORGE_CODEX=off`, write the plan
    to a temp file and run `node scripts/forge-codex-review.mjs --mode plan --plan-file <file>`. It
    picks the backend itself (Codex CLI if installed and logged in, else the OpenAI API if
@@ -95,7 +101,24 @@ Invoke the **babysitter:babysit** skill (Skill tool) in plan-only mode for this 
    show a **"Cross-model objections (<backend>)"** block next to the reuse-audit block, one line
    per objection with its severity, and fold any you accept into the plan. Otherwise show one
    line: `Cross-model plan challenge skipped: <reason>`. Never let it block or auto-approve.
-6. **Present** the plan at a high level with the reuse-audit and cross-model blocks, then use **AskUserQuestion**
+6. **Freeze the requirements (before the approval pause).** The agent that does the work must
+   not pick what it is graded against. Write the task prompt verbatim to a temp file and the
+   PLAN's own additions (if any) as a list to another, then run:
+   ```
+   node scripts/forge-evidence.mjs freeze --base <base> --prompt-file <task file> [--plan-file <plan additions>]
+   ```
+   Source priority is built in: the repo's acceptance spec when one applies
+   (`acceptance/*.acceptance.json`, or `.a5c/forge.json` → `acceptanceGlob`; pass
+   `--spec-name <name>` for the spec the task names) with its ids and text verbatim; otherwise
+   the prompt's Definition of Done / requirements list, verbatim (the same list Phase C re-reads;
+   `--section <regex>` names a differently titled heading). Plan additions are frozen with
+   `origin: "plan"` and appear in the PR as *agent-added*. Print the frozen list it outputs in
+   the approval block, and record any ADR / decision ids the plan relies on as a `decisions`
+   array in `requirements.json`. After approval, commit `requirements.json` as the first commit on
+   the branch. Changing it later needs a **new human breakpoint** and `--force`; the report flags
+   any edit after that first commit as drift at the top of the Evidence section.
+7. **Present** the plan at a high level with the reuse-audit and cross-model blocks and the frozen
+   requirements, then use **AskUserQuestion**
    for any genuine decisions (design choices, scope, the daily-cap/threshold-style constants).
    **Then PAUSE and ask the user to approve the plan before executing.** Do not create the run.
 
@@ -109,7 +132,15 @@ completion proof, applying the arc at every phase:
 - **Read before write; trace the runtime call path** for brownfield changes and scope edits
   to files actually on the live path (grep the whole `src/`, not just entry dirs).
 - **TDD-first** where a spec exists: author tests from the contract (not the impl), confirm
-  RED, then implement to GREEN.
+  RED, then implement to GREEN. Commit the tests before the implementation, so the evidence
+  script can label them `frozen before impl`.
+- **Declare evidence locations, never statuses.** Every test-authoring task appends, for each
+  requirement it covers, where the proof is to `.a5c/forge/evidence.json`:
+  `{ "R1": { "type": "test", "file": "…", "name": "…", "mocked": false } }`, or `e2e` (plus an
+  `artifact` http(s) URL or committed file), `command` (`run` as an argv array, `expectExit`,
+  `expectStdout`), `manual` or `skip` (each with a `reason`; a skip must also be in
+  `SKIPPED.md`). If you mutation-verified a test, add an `@mutation-verified` comment block naming
+  it in the test file.
 - **Mandatory parallel pre-commit review battery** the moment implementation is complete.
   First compute the scope **once** by running the forge helper `scripts/forge-scope.sh`
   (shipped with this plugin — copy it into the target repo's `scripts/` on first use so the
@@ -152,9 +183,18 @@ completion proof, applying the arc at every phase:
   convention requires; then `gen:types`, remove any temporary `.rpc` cast, and run the
   env-gated live-boundary tests (local `supabase start`, never the prod project for
   write-bearing specs).
-- **Commit per step, push the named branch only, open the do-NOT-merge PR** with a
+- **Evidence task (`kind: 'shell'`)** after the full gate and before the final sign-off:
+  `node scripts/forge-evidence.mjs --base <base> --branch <working branch>`. It re-runs every
+  declared proof (named tests through the repo's own runner, commands with no shell), computes
+  the status, labels proof strength, checks CI on the PR head and writes
+  `.a5c/forge/evidence.md`, `.a5c/forge/pr-body.md` and `.a5c/forge/evidence.result.json`. It
+  always exits 0 — it reports, it doesn't block. Show its table at the final sign-off breakpoint.
+- **Commit per step, push the named branch only, open the do-NOT-merge PR.** Build the body from
+  `.a5c/forge/pr-body.md`: the repo's own `.github/PULL_REQUEST_TEMPLATE.md` with the Evidence
+  section inserted (every repo section kept, an existing Evidence/Test section filled), plus a
   substantive body (inventory/rationale tables, decisions, gate results) + the migration
-  comment.
+  comment. After the push, re-run the evidence script so the **CI on PR head** line reflects the
+  pushed commit, and update the PR body from the fresh `pr-body.md`.
 - If the run dead-ends or an effect keeps failing for a bad reason, **repair the process
   file / journal** and continue — don't replay a broken iteration.
 
@@ -163,13 +203,18 @@ completion proof, applying the arc at every phase:
 ## PHASE C — CLOSING GAP-AUDIT ("anything left out?")
 
 Before declaring done, re-read the original task prompt's **Definition of Done / requirements
-list** and go through it item by item. Report back to the user, honestly labeling each:
+list** and go through it item by item, **driven by `.a5c/forge/evidence.result.json`**. Report
+back to the user, honestly labeling each:
 
-- ✅ **Done & verified** — with the evidence (counts, PR #, gate results).
+- ✅ **Done & verified** — only if that requirement's evidence row is ✅ (the script's status, not
+  yours); cite the proof and PR #.
 - ⚠️ **Consciously omitted** — with the justification (e.g. "RALPH plugin wrapper not run as a
   separate step; the RALPH spec-lock suite ran inside `npm test` and a static change touches no
   AI-router surface").
-- ⛔ **Genuinely open** — anything blocked (in `SKIPPED.md`) or owner-action (billing toggles).
+- ⛔ **Genuinely open** — anything blocked (in `SKIPPED.md`), owner-action (billing toggles), or
+  any ❌ / ⚠️ evidence row, with the row's note. Copy these ⚠️ / ⛔ items verbatim into
+  `.a5c/forge/gaps.md` and re-run the evidence script, so the PR's "Not covered by this PR"
+  matches this audit.
 - **Cross-model lens** — ✅ ran via `cli`/`api` (raw → confirmed findings, plan objections and
   how each was handled), or ⚠️ skipped (reason). Never ✅ for a skipped or disabled lens.
 - 🧹 **Housekeeping** — branch state, untracked run/process artifacts, running dev servers,
@@ -201,7 +246,8 @@ the authoritative on-disk meter — the Claude Code session transcript, which re
 - a **rule-based verdict** — 🟢 defensible / 🟡 heavy-justify / 🔴 runaway — computed from
   agent-count ÷ changed-files (and the budget for ship), so it flags the 5M-on-a-one-line
   pattern automatically rather than by vibe;
-- the **`## Open items`** from `SKIPPED.md`, with a 🆕 on any added this run.
+- the **`## Open items`** from `SKIPPED.md`, with a 🆕 on any added this run;
+- one **`Evidence: n✅ n❌ n⚠️ n⏭`** line, copied from `.a5c/forge/evidence.result.json`.
 
 Print the block, then end with the PR link + one-line status. This section is mandatory and
 runs even if an earlier phase was skipped or failed.

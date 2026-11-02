@@ -1,0 +1,82 @@
+{
+  "frozenAt": "2026-11-02T09:29:30.096Z",
+  "frozenCommit": "c3834616a76d7ab4ba1f95685c49d40eb984ceea",
+  "source": "task-prompt",
+  "requirements": [
+    {
+      "id": "R1",
+      "text": "A requirement with no evidence entry → ⚠️ open, still listed. Status in `evidence.json` from the agent is ignored.",
+      "origin": "prompt"
+    },
+    {
+      "id": "R2",
+      "text": "A passing named test → ✅; a failing one → ❌; an unknown runner → ⚠️ open.",
+      "origin": "prompt"
+    },
+    {
+      "id": "R3",
+      "text": "A command proof matching exit code and stdout regex → ✅; a mismatch → ❌. It runs with `shell: false`, with no pipes.",
+      "origin": "prompt"
+    },
+    {
+      "id": "R4",
+      "text": "`(mocked?)` is flagged for an undeclared `jest.mock`. The `frozen before impl`, `new test`, `pre-existing` and `mutation-verified` labels are each derived correctly from fixture git history.",
+      "origin": "prompt"
+    },
+    {
+      "id": "R5",
+      "text": "A local `test-results/` artifact path → ⚠️ open, \"not reachable\".",
+      "origin": "prompt"
+    },
+    {
+      "id": "R6",
+      "text": "No CI on the PR head → the ⛔ line, plus an Open item.",
+      "origin": "prompt"
+    },
+    {
+      "id": "R7",
+      "text": "`requirements.json` edited after its first commit → the drift warning.",
+      "origin": "prompt"
+    },
+    {
+      "id": "R8",
+      "text": "The repo PR template is preserved: fixture template sections all appear in the output in order, and Evidence is inserted or filled.",
+      "origin": "prompt"
+    },
+    {
+      "id": "R9",
+      "text": "Windows CRLF inputs parse correctly (same class as the 0.4.1 bug).",
+      "origin": "prompt"
+    },
+    {
+      "id": "R10",
+      "text": "**Parity guard:** `build.md`, `ship.md` and `forge-auto.js` all reference `forge-evidence.mjs`. Mutation-verify it: remove the reference from one file, watch the test fail, restore, and record it in an `@mutation-verified` block.",
+      "origin": "prompt"
+    },
+    {
+      "id": "R11",
+      "text": "Extend `agents-bundled.test.mjs`-style checks so the README lists `forge-evidence.mjs` among the shipped helpers.",
+      "origin": "prompt"
+    },
+    {
+      "id": "R12",
+      "text": "`freeze` writes `.a5c/forge/requirements.json` from an acceptance spec (ids verbatim) or the task prompt's list, refuses to overwrite without --force, and tags PLAN additions `origin: \"plan\"`.",
+      "origin": "plan"
+    },
+    {
+      "id": "R13",
+      "text": "`build.md` PHASE A–D, `ship.md` and `forge-auto.js` run the freeze, the evidence task (pinned to the working branch) and the PR insertion; a branch mismatch forces every row to open.",
+      "origin": "plan"
+    },
+    {
+      "id": "R14",
+      "text": "`forge-summary.mjs` prints `Evidence: n✅ n❌ n⚠️ n⏭` from `evidence.result.json`.",
+      "origin": "plan"
+    },
+    {
+      "id": "R15",
+      "text": "`help.md`, `README.md` and `CHANGELOG.md` (0.6.0) document the evidence section, the strength labels and the declare-location / script-computes-status rule.",
+      "origin": "plan"
+    }
+  ]
+}

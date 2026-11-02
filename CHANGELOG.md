@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.6.0
+
+- **New: evidence-backed PRs.** Every Forge PR now has an Evidence section that pairs each
+  requirement with proof a reviewer can check without re-running the work.
+  - **Frozen requirements:** at plan approval, `forge-evidence.mjs freeze` writes
+    `.a5c/forge/requirements.json` from the repo's acceptance spec (ids verbatim) or the task's
+    Definition of Done. Plan additions are marked agent-added; ship never adds any. Edits after
+    the first commit are flagged as drift.
+  - **Agent declares location, script computes status:** agents write only where each proof is
+    (`.a5c/forge/evidence.json`). The script re-runs every proof itself, with `shell: false`,
+    through the repo's own test runner, and ignores any status an agent wrote. A requirement
+    with no proof stays listed as ⚠️ open.
+  - **Strength labels:** `mocked` / `mocked?`, `frozen before impl`, `new test`, `pre-existing`,
+    `mutation-verified`. Local-only artifacts are flagged as unreachable; a PR head with no CI
+    gets a ⛔ line and an open item.
+  - **Your PR template stays:** the section is inserted into `.github/PULL_REQUEST_TEMPLATE.md`
+    (an existing Evidence/Test section is filled), never replacing it.
+- **Wired through the arc:** build freezes in PHASE A, grades after the gate in PHASE B, and drives
+  the PHASE C gap-audit from the result (✅ only for a ✅ row). Ship does the same with an Evidence
+  phase pinned to the working branch like the gate; a branch mismatch forces every row open. The
+  run summary gains an `Evidence: n✅ n❌ n⚠️ n⏭` line.
+- **New file:** `scripts/forge-evidence.mjs`. New tests: `tests/forge-evidence.test.mjs` and
+  `tests/evidence-arc.test.mjs`, plus a check that the README lists every shipped helper.
+
 ## 0.5.0
 
 - **New: optional cross-model review lens.** An OpenAI model now gives a second opinion
