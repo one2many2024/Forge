@@ -81,3 +81,22 @@ test('build path: persisted envelopes give raw counts, confirmed stays n/a', () 
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })
+
+// ── Evidence line (forge-evidence.mjs's counts, copied verbatim) ─────────────
+const evidenceLine = (out) => out.split('\n').find((l) => l.startsWith('Evidence:'))
+
+test('Evidence: not recorded without an evidence.result.json', () => {
+  assert.equal(evidenceLine(summary()), 'Evidence: not recorded')
+})
+
+test('Evidence: counts come from evidence.result.json, with its open flags', () => {
+  const dir = path.join(repo, '.a5c', 'forge')
+  fs.mkdirSync(dir, { recursive: true })
+  const p = path.join(dir, 'evidence.result.json')
+  try {
+    fs.writeFileSync(p, JSON.stringify({ counts: { pass: 4, fail: 1, open: 2, skipped: 1 }, ci: { ran: true }, drift: null }))
+    assert.equal(evidenceLine(summary()), 'Evidence: 4✅ 1❌ 2⚠️ 1⏭')
+    fs.writeFileSync(p, '﻿' + JSON.stringify({ counts: { pass: 0, fail: 0, open: 3, skipped: 0 }, ci: { ran: false }, drift: 'x', branchMismatch: true }).replace(/,/g, ',\r\n'))
+    assert.equal(evidenceLine(summary()), 'Evidence: 0✅ 0❌ 3⚠️ 0⏭ (branch mismatch · requirements drifted · no CI on PR head)')
+  } finally { fs.rmSync(path.join(repo, '.a5c'), { recursive: true, force: true }) }
+})
