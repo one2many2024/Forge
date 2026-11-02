@@ -456,6 +456,47 @@ function render({ req, rows, totals, ci, dr, branchNote, openItems, verifierNote
   return L.join('\n')
 }
 
+// ── insert into the repo's own PR template (never replace it) ────────────────
+function findTemplate() {
+  const given = arg('--body', null) || arg('--template', null)
+  if (given) return path.resolve(CWD, given)
+  for (const c of ['.github/PULL_REQUEST_TEMPLATE.md', '.github/pull_request_template.md', 'PULL_REQUEST_TEMPLATE.md', 'docs/PULL_REQUEST_TEMPLATE.md']) {
+    if (fs.existsSync(path.join(CWD, c))) return path.join(CWD, c)
+  }
+  return null
+}
+function shiftHeadings(md, by) {
+  return md.split('\n').map((l) => l.replace(/^(#{1,6})(\s)/, (_, h, s) => '#'.repeat(Math.min(6, h.length + by)) + s)).join('\n')
+}
+function mergeIntoTemplate(template, section) {
+  const ls = lines(template)
+  const block = (body) => [START, body, END]
+  // A previous run's block: replace it in place.
+  const s = ls.indexOf(START)
+  const e = ls.indexOf(END)
+  if (s >= 0 && e > s) {
+    // A standalone block starts with its own "## Evidence"; a filled one sits under the repo's heading.
+    const standalone = /^#{1,6}\s+Evidence\b/.test(ls[s + 1] || '')
+    const prevHeading = !standalone && s > 0 && /^#{1,6}\s/.test(ls[s - 1]) ? ls[s - 1] : null
+    const lvl = prevHeading ? prevHeading.match(/^#+/)[0].length : 0
+    const body = lvl ? shiftHeadings(section.split('\n').slice(1).join('\n'), lvl - 2) : section
+    return [...ls.slice(0, s), ...block(body), ...ls.slice(e + 1)].join('\n')
+  }
+  const heads = ls.map((l, i) => ({ i, m: l.match(/^(#{1,6})\s+(.*)$/) })).filter((h) => h.m)
+  const target = heads.find((h) => /\bevidence\b/i.test(h.m[2])) ||
+    heads.find((h) => /^(tests?|testing|test plan|how (was this|to) test(ed)?|verification|validation)\b/i.test(h.m[2].trim()))
+  if (target) {
+    // Fill the repo's own section: keep its heading and its own body, put ours right under the heading.
+    const lvl = target.m[1].length
+    const body = shiftHeadings(section.split('\n').slice(1).join('\n'), lvl - 2).replace(/^\n+/, '')
+    return [...ls.slice(0, target.i + 1), ...block(body), ...ls.slice(target.i + 1)].join('\n')
+  }
+  if (!heads.length) return [...ls, '', ...block(section)].join('\n')
+  // No Evidence/Test section: insert ours after the first section, before the second heading.
+  const next = heads[1] ? heads[1].i : ls.length
+  return [...ls.slice(0, next), ...block(section), '', ...ls.slice(next)].join('\n')
+}
+
 // ── report ───────────────────────────────────────────────────────────────────
 function report() {
   fs.mkdirSync(DIR, { recursive: true })
@@ -522,8 +563,8 @@ function report() {
   for (const r of rows) if (r.status === 'open' || r.status === 'fail') openItems.push(`${r.id} ${ICON[r.status]}: ${r.note}`)
 
   const section = render({ req, rows, totals, ci, dr, branchNote, openItems, verifierNote })
-  const tpl = null
-  const body = [START, section, END].join('\n')
+  const tpl = findTemplate()
+  const body = tpl && fs.existsSync(tpl) ? mergeIntoTemplate(readText(tpl), section) : [START, section, END].join('\n')
   fs.writeFileSync(path.join(DIR, 'evidence.md'), section + '\n')
   fs.writeFileSync(path.join(DIR, 'pr-body.md'), body.replace(/\n*$/, '\n'))
   fs.writeFileSync(path.join(DIR, 'evidence.result.json'), JSON.stringify({
