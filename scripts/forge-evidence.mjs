@@ -253,8 +253,17 @@ function runNamedTest(proof) {
   const r = run(bin.file, [...bin.pre, ...RUNNERS[runner].args(proof.file, escapeRe(proof.name))])
   if (r.error) return { status: 'open', note: `${runner}: ${r.error}` }
   const out = r.stdout + '\n' + r.stderr
-  const m = runner === 'node' ? out.match(/^# pass (\d+)/m) : out.match(/(\d+) passed/)
-  const passed = m ? Number(m[1]) : 0
+  let passed
+  if (runner === 'node') {
+    // node --test reports a file-level "ok" even when the name filter matched nothing, so the
+    // summary count can't be trusted: look for the named test's own TAP line.
+    const nameRe = escapeRe(proof.name)
+    if (new RegExp(`^\\s*not ok \\d+ - ${nameRe}\\s*(#.*)?$`, 'm').test(out)) return { status: 'fail', note: `${runner}: "${proof.name}" failed` }
+    passed = new RegExp(`^\\s*ok \\d+ - ${nameRe}\\s*$`, 'm').test(out) ? 1 : 0
+  } else {
+    const m = out.match(/(\d+) passed/)
+    passed = m ? Number(m[1]) : 0
+  }
   if (r.code !== 0) return { status: 'fail', note: `${runner} exit ${r.code}` }
   // Exit 0 with nothing run is not a pass: a typo in the name filters out every test.
   if (passed < 1) return { status: 'open', note: `named test matched 0 tests under ${runner}` }
@@ -403,7 +412,7 @@ function proofCell(p) {
   if (!p) return '—'
   const art = p.artifact ? ` · [${/trace/i.test(p.artifact) ? 'trace' : 'artifact'}](${p.artifact})` : ''
   if (p.type === 'test' || p.type === 'e2e') return `\`${p.file}\` › "${p.name}"${art}`
-  if (p.type === 'command') return `\`${(p.run || []).join(' ')}\`${p.expectStdout ? ` → \`${p.expectStdout}\`` : ''}`
+  if (p.type === 'command') return `\`${Array.isArray(p.run) ? p.run.join(' ') : String(p.run ?? '')}\`${p.expectStdout ? ` → \`${p.expectStdout}\`` : ''}`
   if (p.type === 'manual') return 'manual'
   if (p.type === 'skip') return 'skipped'
   return `unknown type "${p.type}"`
@@ -584,7 +593,16 @@ function report() {
 if (SUB === 'freeze') process.exitCode = freeze()
 else if (SUB === 'report') {
   // Reports, never blocks: any internal error still exits 0 with the error on stderr.
-  try { report() } catch (e) { console.error(`[forge-evidence] report failed: ${e && e.stack ? e.stack : e}`) }
+  try { report() } catch (e) {
+    // Never leave a previous run's result on disk looking current.
+    const msg = `## Evidence\n> ⚠️ forge-evidence failed before grading: ${String(e && e.message ? e.message : e).split('\n')[0]}. Nothing was graded.\n`
+    try {
+      fs.mkdirSync(DIR, { recursive: true })
+      fs.writeFileSync(path.join(DIR, 'evidence.md'), msg)
+      fs.writeFileSync(path.join(DIR, 'evidence.result.json'), JSON.stringify({ error: String(e && e.message ? e.message : e), counts: { pass: 0, fail: 0, open: 0, skipped: 0 } }, null, 2) + '\n')
+    } catch { /* nothing more we can do */ }
+    console.error(`[forge-evidence] report failed: ${e && e.stack ? e.stack : e}`)
+  }
   process.exitCode = 0
 } else {
   console.error(`[forge-evidence] unknown subcommand "${SUB}" (want: freeze | report)`)

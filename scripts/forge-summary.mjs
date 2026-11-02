@@ -21,6 +21,9 @@
 //              per-run figure.
 //   --budget   ship's token target (budget.total), for the verdict's spent/budget check
 //   --cwd      repo root (default: process.cwd()) — used to derive the transcript dir + git
+//   --evidence  path to forge-evidence.mjs's evidence.result.json (default:
+//              .a5c/forge/evidence.result.json). Prints `Evidence: n✅ n❌ n⚠️ n⏭`, or
+//              "not recorded" when the file is absent. Counts are copied, never recomputed.
 //   --codex-lens  the ship workflow result's `codexLens` as JSON. Without it, the cross-model
 //              line falls back to the envelopes forge-codex-review.mjs persists in
 //              <git-dir>/forge/, and otherwise says "not recorded". It never guesses.
@@ -321,6 +324,18 @@ function crossModelLine() {
 }
 const crossModel = crossModelLine()
 
+// ── evidence (computed by forge-evidence.mjs, copied here verbatim) ────────────
+function evidenceLine() {
+  const p = path.resolve(CWD, arg('--evidence', path.join('.a5c', 'forge', 'evidence.result.json')))
+  let r
+  try { r = JSON.parse(fs.readFileSync(p, 'utf-8').replace(/^\uFEFF/, '')) } catch { return 'Evidence: not recorded' }
+  if (r.error) return `Evidence: not graded (${String(r.error).slice(0, 100)})`
+  const c = r.counts || {}
+  const extra = [r.branchMismatch ? 'branch mismatch' : '', r.drift ? 'requirements drifted' : '', r.ci && !r.ci.ran ? 'no CI on PR head' : ''].filter(Boolean)
+  return `Evidence: ${c.pass ?? 0}✅ ${c.fail ?? 0}❌ ${c.open ?? 0}⚠️ ${c.skipped ?? 0}⏭${extra.length ? ` (${extra.join(' · ')})` : ''}`
+}
+const evidence = evidenceLine()
+
 // ── render ─────────────────────────────────────────────────────────────────────
 const dur = (orch.firstTs && orch.lastTs) ? Math.round((Date.parse(orch.lastTs) - Date.parse(orch.firstTs)) / 60000) : null
 const pad = (s, n) => String(s).padEnd(n)
@@ -349,6 +364,7 @@ L.push(`  agent source: ${agentSource}`)
 L.push('')
 L.push(`Verdict: ${verdict} — ${why}.`)
 L.push(crossModel)
+L.push(evidence)
 L.push('')
 if (!skipped.section) {
   L.push('Open items (SKIPPED.md): none parseable — add a `## Open items` section with `- [ ]`')

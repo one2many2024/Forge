@@ -1,6 +1,6 @@
 export const meta = {
   name: 'forge-ship',
-  description: 'Autonomous forge arc: reuse-audit → plan → TDD → implement → scope → review battery → verify → resolve → gate → do-NOT-merge PR → gap-audit. No human breakpoints; merge and prod-migration apply stay human. Bounded by hard agent/budget ceilings and diff-scaled depth.',
+  description: 'Autonomous forge arc: reuse-audit → plan → freeze requirements → TDD → implement → scope → review battery → verify → resolve → gate → do-NOT-merge PR → gap-audit. No human breakpoints; merge and prod-migration apply stay human. Bounded by hard agent/budget ceilings and diff-scaled depth.',
   phases: [
     { title: 'Plan' },
     { title: 'Implement' },
@@ -8,6 +8,7 @@ export const meta = {
     { title: 'Verify' },
     { title: 'Resolve' },
     { title: 'Gate' },
+    { title: 'Evidence' },
     { title: 'Ship' },
     { title: 'Gap-audit' },
   ],
@@ -134,6 +135,49 @@ const PLAN_CHALLENGE_SCHEMA = {
     },
   },
 }
+// Evidence: the agent only RUNS forge-evidence.mjs and copies its counts back. The script
+// grades; no agent ever types a pass/fail status.
+const EVIDENCE_RUNNER =
+  'node scripts/forge-evidence.mjs (copy scripts/forge-evidence.mjs from this plugin into the ' +
+  'repo\'s scripts/ first if absent)'
+const FREEZE_SCHEMA = {
+  type: 'object',
+  required: ['frozen', 'source', 'ids'],
+  properties: {
+    frozen: { type: 'boolean' },
+    source: { type: 'string' },
+    ids: { type: 'array', items: { type: 'string' } },
+  },
+}
+const EVIDENCE_SCHEMA = {
+  type: 'object',
+  required: ['branch', 'counts', 'ciRan'],
+  properties: {
+    // The branch the script MEASURED (`branch` in evidence.result.json). A mismatch forces every row open.
+    branch: { type: 'string' },
+    counts: {
+      type: 'object',
+      required: ['pass', 'fail', 'open', 'skipped'],
+      properties: { pass: { type: 'integer' }, fail: { type: 'integer' }, open: { type: 'integer' }, skipped: { type: 'integer' } },
+    },
+    ciRan: { type: 'boolean' },
+  },
+}
+// <evidence-guard> — a pure function; tests extract and run it. A result that measured another
+// branch, or came back malformed, proves nothing: every row is reported open.
+function guardEvidence(ev, branch) {
+  const c = ev && ev.counts && typeof ev.counts === 'object' ? ev.counts : null
+  if (!c) return { counts: { pass: 0, fail: 0, open: 0, skipped: 0 }, ciRan: false, branchMismatch: false, note: 'evidence not recorded' }
+  const n = (k) => (Number.isInteger(c[k]) && c[k] > 0 ? c[k] : 0)
+  const total = n('pass') + n('fail') + n('open') + n('skipped')
+  const measured = ev.branch ? String(ev.branch).trim() : ''
+  if (branch && measured !== branch) {
+    return { counts: { pass: 0, fail: 0, open: total, skipped: 0 }, ciRan: !!ev.ciRan, branchMismatch: true, note: `measured \`${measured || '?'}\`, not \`${branch}\` — every row forced open` }
+  }
+  return { counts: { pass: n('pass'), fail: n('fail'), open: n('open'), skipped: n('skipped') }, ciRan: !!ev.ciRan, branchMismatch: false, note: '' }
+}
+// </evidence-guard>
+
 const CODEX_RUNNER =
   'node scripts/forge-codex-review.mjs (copy scripts/forge-codex-review.mjs and BOTH ' +
   'scripts/forge-codex-review.schema.*.json from this plugin into the repo\'s scripts/ first if absent)'
@@ -179,6 +223,20 @@ async function run() {
   )
   if (aborted) return finish(null, { green: false, summary: 'aborted before implement' }, [], 0, plan)
 
+  // -- Freeze the requirements BEFORE implementation. No human is present, so the list comes
+  // from the repo's acceptance spec or the task prompt only — never from the plan.
+  const frozen = await A(
+    `FREEZE the requirements (forwarder only — do not edit, reword or add any). Write the task ` +
+    `below VERBATIM to a temp file, then run ${EVIDENCE_RUNNER} \`freeze --base ${baseBranch} ` +
+    `--prompt-file <that file>\` (it uses the repo's acceptance spec instead when one applies). Do ` +
+    `NOT pass --plan-file and NEVER --force. Commit .a5c/forge/requirements.json as the FIRST ` +
+    `commit on the new working branch, before any test or implementation. Return frozen ` +
+    `(exit 0), the source it printed and the requirement ids.\n\nTASK:\n${task}`,
+    { phase: 'Plan', label: 'freeze', schema: FREEZE_SCHEMA },
+  )
+  const frozenIds = frozen && Array.isArray(frozen.ids) ? frozen.ids : []
+  if (!frozen || !frozen.frozen) log('WARNING: requirements were not frozen — the Evidence section will report nothing graded')
+
   // -- Plan challenge: one adversarial cross-model pass over the plan (fail-open) --
   const codexLens = { status: codexMode === 'off' ? 'disabled' : 'not run', backend: 'none', reason: codexMode === 'off' ? 'FORGE_CODEX=off' : '', rawFindings: 0, confirmed: 0, planObjections: 0 }
   let objectionsBlock = ''
@@ -211,7 +269,12 @@ async function run() {
     `Implement the task on a new branch off ${baseBranch}. TDD-first (author tests from the ` +
     `contract, confirm RED, implement to GREEN) UNLESS the change is trivial (comment/doc/config ` +
     `only) — then no tests. Read before write; scope edits to the live path. Write any migration ` +
-    `additively (IF NOT EXISTS) but DO NOT apply it to prod. Plan:\n\n${plan}${objectionsBlock}`,
+    `additively (IF NOT EXISTS) but DO NOT apply it to prod. EVIDENCE: for each frozen ` +
+    `requirement in .a5c/forge/requirements.json${frozenIds.length ? ` (${frozenIds.join(', ')})` : ''}, ` +
+    `record in .a5c/forge/evidence.json WHERE its proof is — {type:"test"|"e2e", file, name, ` +
+    `mocked} | {type:"command", run:[argv…], expectExit, expectStdout} | {type:"manual"|"skip", ` +
+    `reason} — and NEVER a status: forge-evidence.mjs re-runs every proof and computes it. Never ` +
+    `edit requirements.json. Plan:\n\n${plan}${objectionsBlock}`,
     { phase: 'Implement', label: 'implement' },
   )
 
@@ -375,6 +438,19 @@ async function run() {
   }
   const gateGreen = fast.green && slow.green
 
+  // -- Evidence: the script re-runs every proof and grades; pinned to the branch like the gate.
+  phase('Evidence')
+  const evRaw = await A(
+    `${onBranch}Run ${EVIDENCE_RUNNER} \`--base ${baseBranch}${branch ? ` --branch ${branch}` : ''}\` ` +
+    `(forwarder only — it always exits 0). Then read .a5c/forge/evidence.result.json and return its ` +
+    `\`branch\`, its \`counts\` VERBATIM and \`ci.ran\` as ciRan. Do not edit evidence.json, ` +
+    `requirements.json or any test to change a result.`,
+    { phase: 'Evidence', label: 'evidence', schema: EVIDENCE_SCHEMA },
+  )
+  const evidence = guardEvidence(evRaw, branch)
+  if (evidence.branchMismatch) log(`EVIDENCE DISCARDED — ${evidence.note}`)
+  const evidenceLine = `${evidence.counts.pass}✅ ${evidence.counts.fail}❌ ${evidence.counts.open}⚠️ ${evidence.counts.skipped}⏭`
+
   // -- Ship: commit, push named branch, open do-NOT-merge PR ----------------
   phase('Ship')
   const ship = await A(
@@ -384,7 +460,11 @@ async function run() {
       ? `Gate GREEN — open a normal PR.`
       : `Gate RED — open a DRAFT PR titled "[gate-red] …" with the failing diagnosis; do NOT force ` +
         `it green.`) +
-    ` Substantive body (inventory, decisions, gate results). If a migration exists, post the ` +
+    ` Build the PR body from .a5c/forge/pr-body.md (the repo's own PR template with the ` +
+    `forge-evidence Evidence section inserted; if the file is missing, re-run ${EVIDENCE_RUNNER}) — ` +
+    `keep every template section and the Evidence section byte-for-byte` +
+    (evidence.branchMismatch ? `, and state that the evidence run measured the wrong branch so every row is open` : '') +
+    `. Add a substantive body around it (inventory, decisions, gate results). If a migration exists, post the ` +
     `Supabase Migration Required comment and note it was NOT applied to prod (human-gated); else ` +
     `post "No Supabase action needed for this branch." ` +
     (codexMode === 'off' ? '' :
@@ -399,14 +479,17 @@ async function run() {
   const gapAudit = await A(
     `Audit the original task item-by-item: ✅ done & verified / ⚠️ consciously omitted (reason) / ` +
     `⛔ open / 🧹 housekeeping. Only claim what passed its gate.\n\nTASK:\n${task}\nFIXED: ` +
-    `${mustFix.length}  GATE GREEN: ${gateGreen}  PR: ${ship}` +
+    `${mustFix.length}  GATE GREEN: ${gateGreen}  PR: ${ship}\nEVIDENCE (computed by forge-evidence.mjs): ` +
+    `${evidenceLine}${evidence.note ? ` — ${evidence.note}` : ''}. Drive the audit from ` +
+    `.a5c/forge/evidence.result.json: a requirement is ✅ done & verified ONLY if its evidence row is ✅ ` +
+    `(and never when the evidence run measured another branch); ❌/⚠️ rows are ⛔ open or ⚠️ omitted with the row's note.` +
     (codexMode === 'off' ? '' :
       `\nCROSS-MODEL LENS: ${codexLensLine(codexLens)}. List it as ✅ ran (via cli|api) ONLY if ` +
       `status is ok; otherwise ⚠️ skipped (reason) — never ✅ for a skipped lens.`),
     { phase: 'Gap-audit', label: 'gap-audit' },
   )
 
-  return finish(ship, { green: gateGreen, summary: `fast=${fast.summary}; slow=${slow.summary}` }, confirmed, round, gapAudit, codexLens)
+  return finish(ship, { green: gateGreen, summary: `fast=${fast.summary}; slow=${slow.summary}` }, confirmed, round, gapAudit, codexLens, evidence)
 }
 
 function codexLensLine(c) {
@@ -414,7 +497,7 @@ function codexLensLine(c) {
     `raw findings=${c.rawFindings} confirmed=${c.confirmed} plan objections=${c.planObjections}`
 }
 
-function finish(prUrl, gate, confirmed, rounds, gapAudit, codexLens) {
+function finish(prUrl, gate, confirmed, rounds, gapAudit, codexLens, evidence) {
   return {
     prUrl: prUrl || null,
     gateGreen: !!(gate && gate.green),
@@ -426,6 +509,7 @@ function finish(prUrl, gate, confirmed, rounds, gapAudit, codexLens) {
     aborted,
     cappedReason: aborted ? (agentCount >= MAX_AGENTS ? `MAX_AGENTS (${MAX_AGENTS})` : `MAX_BUDGET (${MAX_BUDGET})`) : null,
     gapAudit: gapAudit || null,
+    evidence: evidence || { counts: { pass: 0, fail: 0, open: 0, skipped: 0 }, ciRan: false, branchMismatch: false, note: 'evidence not recorded' },
     codexLens: codexLens || { status: codexMode === 'off' ? 'disabled' : 'not run', backend: 'none', reason: codexMode === 'off' ? 'FORGE_CODEX=off' : '', rawFindings: 0, confirmed: 0, planObjections: 0 },
   }
 }
