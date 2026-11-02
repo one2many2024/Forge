@@ -2,8 +2,9 @@
 
 **One command that ships a feature end to end — with the discipline baked in.**
 
-Forge runs a full feature arc — reuse-audit → plan → test-driven implementation → parallel
-review battery → full quality gate → do-NOT-merge PR → gap-audit → run-summary — on top of the
+Forge runs a full feature arc — reuse-audit → plan → frozen requirements → test-driven
+implementation → parallel review battery → full quality gate → evidence → do-NOT-merge PR →
+gap-audit → run-summary — on top of the
 [babysitter](https://github.com/a5c-ai/babysitter) run engine. It comes in two modes:
 
 - **`/forge:build "<task>"`** — *interactive*. Drives the arc on babysitter's run lifecycle and
@@ -44,6 +45,8 @@ builds. Use **ship** when it's well-scoped and you want to walk away and review 
   first step is "investigate").
 - Authors the work with **drift-resistant prompts** (specs read at run time, not paraphrased) and
   tests ordered *before* implementation.
+- **Freezes the requirements** to `.a5c/forge/requirements.json` before any work starts (see
+  [Evidence-backed PRs](#evidence-backed-prs)).
 - **build** presents the plan and **stops for your go-ahead**; **ship** proceeds automatically.
 
 ### Phase B — EXECUTE
@@ -59,12 +62,15 @@ builds. Use **ship** when it's well-scoped and you want to walk away and review 
 - **Full gate** (fix failures — including pre-existing — before proceeding): unit → build → lint →
   typecheck → E2E → any DB/security checks → spec-lock suites, each summarised to pass /
   failing-excerpt via `scripts/gate-summary.sh`. A skip is not a pass.
+- **Grades the evidence**: `scripts/forge-evidence.mjs` re-runs every declared proof and writes the
+  PR's Evidence section.
 - Commits per step, pushes the named branch only, opens a **do-NOT-merge** PR with a substantive
   body and the appropriate migration comment.
 
 ### Phase C — GAP-AUDIT
 Re-reads your task's definition of done and reports each item as ✅ done · ⚠️ consciously omitted
-(with justification) · ⛔ genuinely open · 🧹 housekeeping — plus the PR link.
+(with justification) · ⛔ genuinely open · 🧹 housekeeping — plus the PR link. An item is ✅ only
+when its evidence row is ✅.
 
 ### Phase D — RUN SUMMARY
 Closes every run (build *and* ship) with one compact, fixed-format block via
@@ -73,7 +79,8 @@ Closes every run (build *and* ship) with one compact, fixed-format block via
   battery / Resolve / …), one row per agent, plus an **Orchestration (main-loop)** row and a **TOTAL**;
 - a **rule-based verdict** — 🟢 defensible / 🟡 heavy-justify / 🔴 runaway — from agent-count ÷
   changed-files (and the budget, for ship), so a runaway is flagged automatically, not by feel;
-- the **`## Open items`** parsed from `SKIPPED.md`, with a 🆕 on anything added this run.
+- the **`## Open items`** parsed from `SKIPPED.md`, with a 🆕 on anything added this run;
+- an **`Evidence: n✅ n❌ n⚠️ n⏭`** line copied from the evidence result.
 
 The numbers come from the Claude Code **session transcript** — the on-disk record of per-turn
 `usage` for the orchestration loop and every subagent's reported `subagent_tokens`. Output tokens
@@ -88,6 +95,62 @@ checkboxes so the meter can list them.
 > billing, cost accounting, or any authoritative accounting of usage. Forge and its authors make
 > **no warranty** as to their accuracy and accept **no liability** for any decision made in reliance
 > on them. Your AI provider's own usage and billing records are the sole source of truth.
+
+---
+
+## Evidence-backed PRs
+
+Every Forge PR pairs each requirement with proof a reviewer can check without re-running the work.
+The review question moves from "does it work?" to "is the proof convincing?". Two rules shape it:
+
+1. **The agent that did the work doesn't grade it.** Requirements are frozen before
+   implementation, and pass/fail is computed by a deterministic script, never typed by an agent.
+2. **Repo-agnostic.** Forge detects what a repo has, degrades gracefully, and never overwrites the
+   repo's own PR template.
+
+**Freeze (plan approval).** `node scripts/forge-evidence.mjs freeze` writes
+`.a5c/forge/requirements.json`: from the repo's acceptance spec when one applies
+(`acceptance/*.acceptance.json`, configurable via `.a5c/forge.json` → `acceptanceGlob`), ids and
+text verbatim; otherwise the task prompt's Definition of Done list, verbatim. Plan additions get
+`origin: "plan"` and show as *agent-added* (ship never adds them). Editing the file afterwards
+needs a new human breakpoint; the report warns at the top of the section if it changed after its
+first commit.
+
+**Declare, don't grade.** The executing agent writes only *where* each proof is:
+
+```json
+{ "R1": { "type": "test",    "file": "tests/x.test.mjs", "name": "rejects expired token", "mocked": false },
+  "R2": { "type": "e2e",     "file": "e2e/login.spec.ts", "name": "member is denied", "artifact": "<CI artifact URL>" },
+  "R3": { "type": "command", "run": ["npm","run","check:rls"], "expectExit": 0, "expectStdout": "0 violations" },
+  "R4": { "type": "manual",  "reason": "needs a production billing toggle" } }
+```
+
+**Report (after the gate).** `node scripts/forge-evidence.mjs --base main --branch <working branch>`
+re-runs every runnable proof with `shell: false` (Jest `-t`, Vitest `-t`, Playwright `-g`,
+`node --test --test-name-pattern`, detected from `package.json`; a repo's own
+`npm run verify:acceptance` JSON report is used instead when it exists) and computes:
+
+| Status | Meaning |
+|---|---|
+| ✅ pass | the proof re-ran and passed |
+| ❌ fail | the proof re-ran and failed |
+| ⚠️ open | no proof, unrunnable (e.g. runner not detected, name matched nothing), manual, or unreachable |
+| ⏭ skipped | declared skip with a reason, also listed in `SKIPPED.md` |
+
+| Strength label | Derived from |
+|---|---|
+| `mocked` / `mocked?` | declared, or found (`jest.mock`, `vi.mock`, `msw`, `page.route(`, `__mocks__`) but not declared |
+| `frozen before impl` | the test was committed before the branch's first non-test commit (true TDD) |
+| `new test` / `pre-existing` | added on this branch / already on the base |
+| `mutation-verified` | the test file has an `@mutation-verified` block naming that test |
+
+An artifact must be an `http(s)` URL or a file committed in the PR; a local path such as
+`test-results/…` makes the row ⚠️ open. The **CI on PR head** line reads the head commit's check
+runs with `gh`; if none ran it prints ⛔ and adds an open item. The script writes
+`.a5c/forge/evidence.md`, `pr-body.md` (the section inside the repo's own
+`.github/PULL_REQUEST_TEMPLATE.md`, every repo section kept) and `evidence.result.json`, and always
+exits 0: it reports, it doesn't block. In ship, the evidence task is pinned to the working branch
+like the gate, and a branch mismatch forces every row to ⚠️ open.
 
 ---
 
@@ -170,6 +233,8 @@ from the plugin (ship):
   green logs never flood context.
 - **`forge-codex-review.mjs`** (+ two `forge-codex-review.schema.*.json`) — the cross-model runner:
   picks the backend, calls the model, normalises the output into one fail-open JSON envelope.
+- **`forge-evidence.mjs`** — freezes the requirements at plan approval, then re-runs every declared
+  proof and renders the PR's Evidence section into the repo's own PR template.
 - **`forge-summary.mjs`** — the Phase D run-summary / token meter (Node; reads the session transcript).
 
 ---

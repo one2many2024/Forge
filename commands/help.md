@@ -11,8 +11,8 @@ any task; if the user included a task prompt, tell them to pass it to `/forge:bu
 
 ---
 
-**Forge** runs our full feature arc — reuse-audit → plan → TDD → implement → parallel review
-battery → gate → do-NOT-merge PR → gap-audit — in one command. It ships in two modes:
+**Forge** runs our full feature arc — reuse-audit → plan → freeze requirements → TDD → implement
+→ parallel review battery → gate → evidence → do-NOT-merge PR → gap-audit — in one command. It ships in two modes:
 
 ## `/forge:build "<task>"` — interactive (guided)
 - **What:** the arc on **babysitter's run lifecycle**, pausing at **two human breakpoints** —
@@ -33,6 +33,26 @@ battery → gate → do-NOT-merge PR → gap-audit — in one command. It ships 
     **baseline** run — ship still completes the whole arc, just at default depth.
 - **Self-cap:** ship stops at **750k output tokens** regardless of budget; on the cap it opens
   the PR with what it has and says so.
+
+## Evidence-backed PRs
+Every Forge PR has an **Evidence** section pairing each requirement with proof you can check
+without re-running the work, so review asks "is the proof convincing?" rather than "does it work?".
+
+- **Frozen first.** At plan approval the requirements are frozen to `.a5c/forge/requirements.json`:
+  from the repo's acceptance spec when there is one, else the task's Definition of Done, verbatim.
+  Plan additions are marked *agent-added*. Any later edit is flagged as drift.
+- **The agent declares where the proof is; the script computes the status.** Agents only write
+  proof locations to `.a5c/forge/evidence.json`. `scripts/forge-evidence.mjs` re-runs every proof
+  itself (the named test through the repo's runner, or a command with no shell) and sets ✅ pass ·
+  ❌ fail · ⚠️ open (no proof, unrunnable or unreachable) · ⏭ skipped (with a reason, also in
+  `SKIPPED.md`). A requirement with no proof stays in the table as ⚠️ open.
+- **Strength labels:** `mocked` / `mocked?` (mocks found but not declared), `frozen before impl`
+  (test committed before any implementation), `new test`, `pre-existing`, `mutation-verified`
+  (the test file has an `@mutation-verified` block naming it).
+- **CI on PR head:** read from GitHub; when no CI ran on the PR's head commit it says ⛔ and adds
+  an open item.
+- **Your template stays.** The section is inserted into the repo's own
+  `.github/PULL_REQUEST_TEMPLATE.md` (an existing Evidence/Test section is filled), never replacing it.
 
 ## What stays human in BOTH modes (never automated)
 - **Merge to `main`** — always requires human review. Forge only ever opens a do-NOT-merge PR.
